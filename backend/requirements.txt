@@ -1,28 +1,30 @@
-# ── Core Framework ──
+# ── Core Framework & Web Server ──
 fastapi
 uvicorn[standard]
 python-multipart
 
-# ── Validazione & Settings ──
-pydantic
+# ── Validazione & Configurazione ──
+pydantic[email]
 pydantic-settings
 email-validator
 
-# ── Autenticazione ──
+# ── Autenticazione & Sicurezza ──
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
 
-# ── Database & HTTP ──
+# ── Database & Client HTTP ──
 aiosqlite
 httpx
 
-# ── AI ──
-crewai
-crewai-tools
-litellm>=1.40.0     # bridge per Google Gemini (e qualsiasi altro provider)
+# ── AI Ecosystem (Gemini & Orchestration) ──
+crewai[google-genai]>=0.30.0
 
-# ── Utilità ──
+crewai-tools
+litellm
+google-generativeai
+
+# ── Integrazioni & Utility ──
 stripe
 python-docx
 python-dotenv

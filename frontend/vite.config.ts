@@ -6,10 +6,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Proxy API calls in dev verso il backend FastAPI
+      // Tutte le route backend — mancavano /billing e /storage
       '/auth':     { target: 'http://localhost:8000', changeOrigin: true },
       '/users':    { target: 'http://localhost:8000', changeOrigin: true },
       '/features': { target: 'http://localhost:8000', changeOrigin: true },
+      '/billing':  { target: 'http://localhost:8000', changeOrigin: true },  // ← mancava
+      '/storage':  { target: 'http://localhost:8000', changeOrigin: true },  // ← mancava
+      '/health':   { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 });

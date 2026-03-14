@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # ── Google Gemini AI ──  (sostituisce DeepSeek)
     GEMINI_API_KEY: str = ""
     # Il prefisso "gemini/" è richiesto da LiteLLM per riconoscere il provider
-    GEMINI_MODEL: str = "gemini/gemini-2.5-pro-preview"
+    GEMINI_MODEL: str = "gemini/gemini-1.5-pro"
 
     # ── Google OAuth ──
     GOOGLE_CLIENT_ID: Optional[str] = None

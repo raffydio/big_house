@@ -1,7 +1,7 @@
 // src/App.tsx
-// FIX Bug 1: isDashboard usa !!auth.token invece di !!auth.user
-// → dopo Google login il token esiste subito, user arriva con fetch asincrono
-// → prima il check su user causava il mancato redirect al dashboard
+// FIX navigate: legge localStorage (sincrono) invece di auth.token (React state asincrono)
+// Quando loginWithGoogle chiama onSuccess() → navigate('dashboard'), lo state auth.token
+// potrebbe non essere ancora aggiornato. localStorage.setItem avviene prima, quindi è affidabile.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Lang, View, AuthMode, Plan, UserLimits } from './types';
@@ -26,6 +26,7 @@ import PaymentSuccess   from './pages/PaymentSuccess';
 
 import './styles/globals.css';
 
+const TOKEN_KEY = 'bh_token';
 type Feature = 'deepresearch' | 'calcola';
 
 const DASHBOARD_VIEWS: View[] = [
@@ -53,16 +54,22 @@ const App: React.FC = () => {
     localStorage.setItem('bh_lang', l);
   };
 
+  // ── CORE FIX ──────────────────────────────────────────────────────────────
+  // navigate NON dipende da auth.token (React state).
+  // Dipende da localStorage.getItem(TOKEN_KEY) che è sincrono e viene scritto
+  // PRIMA che onSuccess() venga chiamato in useAuth._handleToken().
+  // Questo risolve il problema del redirect che non avveniva dopo Google login.
+  // ──────────────────────────────────────────────────────────────────────────
   const navigate = useCallback((target: View) => {
-    // Usa token come guard — non user (user arriva in modo asincrono dopo login)
-    if (DASHBOARD_VIEWS.includes(target) && !auth.token) {
+    const hasToken = !!localStorage.getItem(TOKEN_KEY);
+    if (DASHBOARD_VIEWS.includes(target) && !hasToken) {
       setAuthMode('login');
       setView('login');
       return;
     }
     setView(target);
     setSidebarOpen(false);
-  }, [auth.token]);
+  }, []); // nessuna dipendenza: legge localStorage live ogni chiamata
 
   useEffect(() => { auth.fetchUser(); }, []);
 
@@ -74,6 +81,7 @@ const App: React.FC = () => {
     }
   }, [auth.user?.id]);
 
+  // Kick-out se token sparisce (logout)
   useEffect(() => {
     if (!auth.token && DASHBOARD_VIEWS.includes(view)) setView('landing');
   }, [auth.token]);
@@ -106,8 +114,8 @@ const App: React.FC = () => {
     return <PaymentSuccess onNavigate={navigate} />;
   }
 
-  // FIX: token come discriminante — user è null per qualche ms dopo il login
-  const isDashboard = !!auth.token && DASHBOARD_VIEWS.includes(view);
+  // isDashboard: localStorage (sincrono) + view è una dashboard view
+  const isDashboard = !!localStorage.getItem(TOKEN_KEY) && DASHBOARD_VIEWS.includes(view);
 
   return (
     <>
