@@ -1,0 +1,110 @@
+# ══════════════════════════════════════════
+# Big House AI — Comandi Windows
+# Venv + Backend + Frontend
+# ══════════════════════════════════════════
+
+
+# ─────────────────────────────────────────
+# STEP 1 — Clona il repository (prima volta)
+# ─────────────────────────────────────────
+
+cd C:\Users\TUO_NOME\Desktop
+git clone https://github.com/start94/big_house.git
+cd big_house
+
+
+# ─────────────────────────────────────────
+# STEP 2 — Crea il virtual environment
+# (eseguire UNA SOLA VOLTA)
+# ─────────────────────────────────────────
+
+cd C:\Users\TUO_NOME\Desktop\big_house\backend
+python -m venv venv
+
+
+# ─────────────────────────────────────────
+# STEP 3 — Attiva il venv
+# ─────────────────────────────────────────
+
+# CMD (Prompt dei comandi):
+venv\Scripts\activate.bat
+
+# PowerShell:
+venv\Scripts\Activate.ps1
+
+# Se PowerShell blocca l'esecuzione degli script:
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+# poi riprova:
+venv\Scripts\Activate.ps1
+
+# ✅ Quando il venv è attivo vedrai:
+# (venv) C:\Users\TUO_NOME\Desktop\big_house\backend>
+
+
+# ─────────────────────────────────────────
+# STEP 4 — Installa le dipendenze
+# (eseguire UNA SOLA VOLTA o dopo aggiornamenti)
+# ─────────────────────────────────────────
+
+pip install -r requirements.txt
+
+
+# ─────────────────────────────────────────
+# STEP 5 — Avvia il backend
+# ─────────────────────────────────────────
+
+python -m uvicorn app.main:app --reload --port 8000
+
+# ✅ Vedrai:
+# INFO: Uvicorn running on http://127.0.0.1:8000
+
+
+# ─────────────────────────────────────────
+# STEP 6 — Frontend (terminale separato)
+# ─────────────────────────────────────────
+
+cd C:\Users\TUO_NOME\Desktop\big_house\frontend
+
+# Prima volta:
+npm install
+
+npm run dev
+
+# ✅ Vedrai:
+# Local: http://localhost:5173/
+
+
+# ─────────────────────────────────────────
+# STEP 7 — Stripe CLI (terminale separato)
+# ─────────────────────────────────────────
+
+stripe listen --forward-to localhost:8000/billing/webhook
+
+# ✅ Vedrai:
+# Ready! Your webhook signing secret is whsec_xxx
+
+
+# ─────────────────────────────────────────
+# COMANDI UTILI
+# ─────────────────────────────────────────
+
+# Disattiva venv:
+deactivate
+
+# Aggiorna un pacchetto:
+pip install --upgrade stripe
+
+# Salva dipendenze aggiornate:
+pip freeze > requirements.txt
+
+# Cancella database (reset completo):
+del big_house_ai.db
+
+# Controlla cosa gira sulla porta 8000:
+netstat -ano | findstr :8000
+
+# Termina processo su porta 8000 (sostituisci PID):
+taskkill /PID 12345 /F
+
+
+

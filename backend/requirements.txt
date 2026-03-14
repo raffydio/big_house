@@ -1,0 +1,28 @@
+# ── Core Framework ──
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ── Validazione & Settings ──
+pydantic
+pydantic-settings
+email-validator
+
+# ── Autenticazione ──
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+
+# ── Database & HTTP ──
+aiosqlite
+httpx
+
+# ── AI ──
+crewai
+crewai-tools
+litellm>=1.40.0     # bridge per Google Gemini (e qualsiasi altro provider)
+
+# ── Utilità ──
+stripe
+python-docx
+python-dotenv

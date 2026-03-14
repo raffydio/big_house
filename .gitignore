@@ -1,0 +1,47 @@
+# =========================
+# Python
+# =========================
+venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Database
+# =========================
+*.db
+
+# =========================
+# Runtime storage
+# =========================
+backend/user_storage/
+
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# =========================
+# IDE / OS
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
