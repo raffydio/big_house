@@ -1,75 +1,72 @@
-"""
-main.py — Big House AI
-Entry point. Nessuna business logic — solo configurazione app, middleware e routing.
+# backend/app/main.py
+# AGGIORNATO: integra storage_manager per cleanup automatico
+#   - All'avvio: ensure_storage_schema() + run_full_cleanup()
+#   - Ogni 24h: background task AsyncIO
 
-FIX: billing importato correttamente PRIMA di app = FastAPI(), 
-     e include_router chiamato DOPO la definizione di app.
-"""
-
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
-from app.core.database import init_db
-from app.routers import auth, users, features, storage, billing   # ← TUTTI qui in un unico import
+from app.routers import auth, features, billing
+from app.core.storage_manager import ensure_storage_schema, run_full_cleanup
 
-# ─────────────────────────────────────────
-# Logging
-# ─────────────────────────────────────────
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
 logger = logging.getLogger(__name__)
 
+# ── Background cleanup task ───────────────────────────────────────────────────
+async def periodic_cleanup():
+    """Cleanup ogni 24 ore. Gira in background per tutta la vita del processo."""
+    while True:
+        await asyncio.sleep(24 * 60 * 60)   # aspetta 24h
+        try:
+            logger.info("Background cleanup avviato")
+            run_full_cleanup()
+        except Exception as e:
+            logger.error(f"Periodic cleanup error: {e}")
 
-# ─────────────────────────────────────────
-# Lifespan (startup / shutdown)
-# ─────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Avvio {settings.APP_NAME} v{settings.APP_VERSION} [{settings.ENVIRONMENT}]")
-    init_db()
-    logger.info("Database pronto.")
+    # STARTUP
+    logger.info("Big House AI avvio...")
+    ensure_storage_schema()       # crea tabelle se non esistono
+    run_full_cleanup()            # cleanup iniziale (scaduti, orfani, cache)
+
+    # Avvia il task periodico
+    task = asyncio.create_task(periodic_cleanup())
+
     yield
-    logger.info("Shutdown applicazione.")
 
+    # SHUTDOWN
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Big House AI shutdown.")
 
-# ─────────────────────────────────────────
-# App  ← DEVE essere definita PRIMA di ogni include_router
-# ─────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
-    description="Piattaforma AI per analisi investimenti immobiliari",
-    docs_url="/docs" if not settings.is_production else None,
-    redoc_url="/redoc" if not settings.is_production else None,
+    title="Big House AI",
+    description="Analisi immobiliare con AI",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
-# ── CORS ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["*"],          # restringere in produzione al dominio Cloudflare
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Router ──  ← include_router DOPO app = FastAPI(...)
-app.include_router(auth.router)
-app.include_router(users.router)
-app.include_router(features.router)
-app.include_router(storage.router)
-app.include_router(billing.router)
+app.include_router(auth.router,     prefix="/auth",     tags=["auth"])
+app.include_router(features.router, prefix="/features", tags=["features"])
+app.include_router(billing.router,  prefix="/billing",  tags=["billing"])
 
-
-# ─────────────────────────────────────────
-# Health check
-# ─────────────────────────────────────────
-@app.get("/health", tags=["System"], include_in_schema=False)
-async def health():
-    return {"status": "ok", "version": settings.APP_VERSION}
+@app.get("/health")
+def health():
+    return {"status": "ok"}

@@ -1,6 +1,6 @@
 // src/components/UpgradeModal.tsx
-// Modal upgrade professionale — si apre quando l'utente esaurisce le ricerche
-// Ispirato al pattern modale di Anthropic: lista benefit + CTA chiara
+// AGGIORNATO: PRO_BENEFITS allineati con security.py
+//   10 Deep Research + 10 Calcola ROI (era 20+20)
 
 import React, { useEffect } from 'react';
 import type { Lang } from '../types';
@@ -19,12 +19,12 @@ const FEATURE_LABELS: Record<string, string> = {
 };
 
 const PRO_BENEFITS = [
-  { icon: '⬡', text: '20 Deep Research al giorno' },
-  { icon: '◎', text: '20 Calcola ROI al giorno' },
+  { icon: '⬡', text: '10 Deep Research al giorno' },    // ← era 20
+  { icon: '◎', text: '10 Calcola ROI al giorno' },       // ← era 20
   { icon: '📄', text: 'Export report DOCX illimitati' },
   { icon: '🗂', text: 'Storico sessioni completo' },
   { icon: '☁️', text: 'Storage 2GB per i tuoi file' },
-  { icon: '⚡', text: 'Accesso alle ultime novità AI' },
+  { icon: '🤖', text: 'Gemini 2.5 Pro — massima qualità AI' }, // ← nuovo
 ];
 
 export const UpgradeModal: React.FC<UpgradeModalProps> = ({
@@ -34,7 +34,6 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   lang,
   feature = 'deepresearch',
 }) => {
-  // Chiudi con ESC
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -42,7 +41,6 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     return () => window.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
-  // Blocca scroll body
   useEffect(() => {
     document.body.style.overflow = isOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
@@ -92,7 +90,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             borderRadius: '50%', width: 32, height: 32,
             cursor: 'pointer', color: '#94a3b8', fontSize: 16,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            lineHeight: 1, transition: 'background 0.15s',
+            lineHeight: 1,
           }}
           onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
           onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
@@ -100,7 +98,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
           ×
         </button>
 
-        {/* Icona + Header */}
+        {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{
             width: 56, height: 56, borderRadius: '16px',
@@ -132,8 +130,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
           padding: '16px 20px',
           marginBottom: 24,
         }}>
-          <p style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.08em', marginBottom: 12, textTransform: 'uppercase' }}>
-            Con il piano PRO ottieni anche:
+          <p style={{
+            color: '#94a3b8', fontSize: '0.75rem', fontWeight: 600,
+            letterSpacing: '0.08em', marginBottom: 12, textTransform: 'uppercase',
+          }}>
+            Con il piano PRO ottieni:
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {PRO_BENEFITS.map((b) => (
@@ -176,7 +177,6 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             color: '#fff', fontSize: '1rem', fontWeight: 700,
             cursor: 'pointer', fontFamily: 'inherit',
             boxShadow: '0 4px 20px rgba(59,130,246,0.35)',
-            transition: 'opacity 0.15s, transform 0.15s',
             marginBottom: 10,
           }}
           onMouseEnter={e => { e.currentTarget.style.opacity = '0.9'; e.currentTarget.style.transform = 'translateY(-1px)'; }}

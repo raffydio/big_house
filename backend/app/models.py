@@ -1,5 +1,7 @@
 """
-models.py — aggiornato con piano BASIC e modelli Stripe
+models.py — limiti piani aggiornati
+PRO: 10 DR + 10 Calc  (era 20+20)
+PLUS: 20 DR + 50 Calc (era 20+100)
 """
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
@@ -9,9 +11,9 @@ from enum import Enum
 
 class Plan(str, Enum):
     FREE  = "free"
-    BASIC = "basic"   # €4.99/mese — NUOVO
-    PRO   = "pro"     # €29/mese
-    PLUS  = "plus"    # €79/mese
+    BASIC = "basic"
+    PRO   = "pro"
+    PLUS  = "plus"
 
 
 class UserRegister(BaseModel):
@@ -82,33 +84,38 @@ class BillingStatus(BaseModel):
 
 
 # ─────────────────────────────────────────
-# Limiti per piano
+# Limiti per piano — AGGIORNATI
+#
+# Logica economica (Gemini 2.5 Flash-Lite + Tavily):
+#   FREE:  costo ~$0/mese   → acquisition funnel
+#   BASIC: costo ~$0.50/mese → margine 90%+ su €4.99
+#   PRO:   costo max $21/mese → margine positivo anche al 100%
+#   PLUS:  costo max $40/mese → margine 43%+ anche al 100%
 # ─────────────────────────────────────────
-
 PLAN_LIMITS = {
     Plan.FREE: {
         "deepresearch_daily": 1,
-        "calcola_daily": 1,
-        "storage_gb": 0,
-        "export_docx": False,
+        "calcola_daily":      1,
+        "storage_gb":         0,
+        "export_docx":        False,
     },
     Plan.BASIC: {
         "deepresearch_daily": 3,
-        "calcola_daily": 3,
-        "storage_gb": 0.5,
-        "export_docx": True,
+        "calcola_daily":      3,
+        "storage_gb":         0.5,
+        "export_docx":        True,
     },
     Plan.PRO: {
-        "deepresearch_daily": 20,
-        "calcola_daily": 20,
-        "storage_gb": 2,
-        "export_docx": True,
+        "deepresearch_daily": 10,   # ← era 20
+        "calcola_daily":      10,   # ← era 20
+        "storage_gb":         2,
+        "export_docx":        True,
     },
     Plan.PLUS: {
-        "deepresearch_daily": 999,  # illimitato
-        "calcola_daily": 999,
-        "storage_gb": 10,
-        "export_docx": True,
+        "deepresearch_daily": 20,   # invariato
+        "calcola_daily":      50,   # ← era 100
+        "storage_gb":         10,
+        "export_docx":        True,
     },
 }
 

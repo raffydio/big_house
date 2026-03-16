@@ -1,7 +1,10 @@
 """
-routers/features.py  v2
-- POST /features/deep-research  → query libera, agenti cercano opportunità
-- POST /features/calculate      → confronto ROI fino a 5 immobili
+routers/features.py
+- POST /features/deep-research
+- POST /features/calculate
+
+AGGIORNAMENTO: passa current_user["plan"] a run_deep_research e run_compare_roi
+in modo che ogni piano usi il modello Gemini appropriato.
 """
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,8 +28,12 @@ router = APIRouter(prefix="/features", tags=["AI Features"])
     summary="Ricerca opportunità immobiliari sul mercato",
     description=(
         "L'utente descrive cosa cerca in linguaggio naturale. "
-        "4 agenti AI analizzano il mercato e restituiscono 2-4 opportunità concrete. "
-        "Limiti: FREE 1/g · PRO 5/g · PLUS 20/g"
+        "4 agenti AI analizzano il mercato e restituiscono 2-4 opportunità concrete.\n\n"
+        "**Modello AI per piano:**\n"
+        "- FREE: Gemini 2.5 Flash-Lite\n"
+        "- BASIC: Gemini 2.5 Flash\n"
+        "- PRO/PLUS: Gemini 2.5 Pro\n\n"
+        "Limiti: FREE 1/g · BASIC 3/g · PRO 10/g · PLUS 20/g"
     ),
 )
 async def deep_research(
@@ -34,10 +41,18 @@ async def deep_research(
     current_user: dict = Depends(get_current_user),
 ):
     remaining = check_limit(current_user, "deepresearch")
-    logger.info(f"Deep Research | user={current_user['email']} | query={payload.query[:60]}")
+    plan = current_user.get("plan", "free")
+
+    logger.info(
+        f"Deep Research | user={current_user['email']} | "
+        f"plan={plan} | query={payload.query[:60]}"
+    )
 
     try:
-        result = await run_deep_research(query=payload.query)
+        result = await run_deep_research(
+            query=payload.query,
+            plan=plan,              # ← nuovo parametro
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -54,9 +69,12 @@ async def deep_research(
     response_model=CompareROIResponse,
     summary="Confronto ROI fino a 5 immobili",
     description=(
-        "Inserisci 1-5 immobili già trovati. 3 agenti calcolano ROI, payback "
-        "e scenario ottimale per ogni immobile e producono una tabella comparativa. "
-        "Limiti: FREE 3/g · PRO 20/g · PLUS 100/g"
+        "Inserisci 1-5 immobili già trovati. 3 agenti calcolano ROI e payback.\n\n"
+        "**Modello AI per piano:**\n"
+        "- FREE: Gemini 2.5 Flash-Lite\n"
+        "- BASIC: Gemini 2.5 Flash\n"
+        "- PRO/PLUS: Gemini 2.5 Pro\n\n"
+        "Limiti: FREE 1/g · BASIC 3/g · PRO 10/g · PLUS 50/g"
     ),
 )
 async def calculate_roi(
@@ -64,13 +82,18 @@ async def calculate_roi(
     current_user: dict = Depends(get_current_user),
 ):
     remaining = check_limit(current_user, "calcola")
+    plan = current_user.get("plan", "free")
+
     logger.info(
         f"Calcola ROI | user={current_user['email']} | "
-        f"immobili={len(payload.properties)} | goal={payload.goal}"
+        f"plan={plan} | immobili={len(payload.properties)} | goal={payload.goal}"
     )
 
     try:
-        result = await run_compare_roi(data=payload)
+        result = await run_compare_roi(
+            data=payload,
+            plan=plan,              # ← nuovo parametro
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:

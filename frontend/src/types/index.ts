@@ -1,8 +1,11 @@
-// src/types/index.ts — AGGIORNATO
-// FIX: aggiunto 'basic' al tipo Plan (mancava → crash su PlanBadge e checkout)
+// src/types/index.ts
+// AGGIORNATO:
+//   PRO:  10 DR + 10 Calc/giorno  (era 20+20)
+//   PLUS: 20 DR + 50 Calc/giorno  (era illimitato/999)
+//   BASIC: accesso a Storage e History (era bloccato su 'pro')
 
 export type Lang = 'it' | 'en' | 'fr' | 'de' | 'es' | 'pt';
-export type Plan = 'free' | 'basic' | 'pro' | 'plus';   // ← 'basic' aggiunto
+export type Plan = 'free' | 'basic' | 'pro' | 'plus';
 export type BillingCycle = 'monthly' | 'annual';
 export type View =
   | 'landing'
@@ -188,7 +191,13 @@ export interface StoredFile {
   session_id: string;
 }
 
-// ─── Plan config ───
+// ─── Plan config ─────────────────────────────────────────────────────────────
+// LIMITI ALLINEATI con backend/app/core/security.py
+// FREE:  1 DR + 1 Calc/giorno
+// BASIC: 3 DR + 3 Calc/giorno
+// PRO:   10 DR + 10 Calc/giorno  ← era 20+20
+// PLUS:  20 DR + 50 Calc/giorno  ← era 999+999
+// ─────────────────────────────────────────────────────────────────────────────
 export interface PlanConfig {
   id: Plan;
   nameKey: string;
@@ -200,6 +209,7 @@ export interface PlanConfig {
     calcola: number;
   };
   highlighted?: boolean;
+  modelLabel: string; // modello AI usato per il piano
 }
 
 export const PLAN_CONFIGS: PlanConfig[] = [
@@ -210,6 +220,7 @@ export const PLAN_CONFIGS: PlanConfig[] = [
     currency: '€',
     limits: { deepresearch: 1, calcola: 1 },
     features: ['planFreeF1', 'planFreeF2', 'planFreeF3'],
+    modelLabel: 'Gemini 2.5 Flash-Lite',
   },
   {
     id: 'basic',
@@ -218,30 +229,36 @@ export const PLAN_CONFIGS: PlanConfig[] = [
     currency: '€',
     limits: { deepresearch: 3, calcola: 3 },
     features: ['planBasicF1', 'planBasicF2', 'planBasicF3'],
+    modelLabel: 'Gemini 2.5 Flash',
   },
   {
     id: 'pro',
     nameKey: 'planPro',
     prices: { monthly: 29, annual: 21.75 },
     currency: '€',
-    limits: { deepresearch: 20, calcola: 20 },
+    limits: { deepresearch: 10, calcola: 10 },   // ← era 20+20
     features: ['planProF1', 'planProF2', 'planProF3', 'planProF4', 'planProF5'],
     highlighted: true,
+    modelLabel: 'Gemini 2.5 Pro',
   },
   {
     id: 'plus',
     nameKey: 'planPlus',
     prices: { monthly: 79, annual: 59.25 },
     currency: '€',
-    limits: { deepresearch: 999, calcola: 999 },
+    limits: { deepresearch: 20, calcola: 50 },   // ← era 999+999
     features: ['planPlusF1', 'planPlusF2', 'planPlusF3', 'planPlusF4', 'planPlusF5'],
+    modelLabel: 'Gemini 2.5 Pro',
   },
 ];
 
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+// AGGIORNATO: BASIC ora accede a History e Storage (ha 0.5GB storage)
+// ─────────────────────────────────────────────────────────────────────────────
 export const SIDEBAR_ITEMS: SidebarItem[] = [
-  { id: 'dashboard',    labelKey: 'navOverview',     icon: '◈', planRequired: null },
-  { id: 'deepresearch', labelKey: 'navDeepResearch', icon: '⬡', planRequired: null },
-  { id: 'calcola',      labelKey: 'navCalcola',      icon: '◎', planRequired: null },
-  { id: 'history',      labelKey: 'navHistory',      icon: '◷', planRequired: 'pro' },
-  { id: 'storage',      labelKey: 'navStorage',      icon: '▦', planRequired: 'pro' },
+  { id: 'dashboard',    labelKey: 'navOverview',     icon: '◈', planRequired: null    },
+  { id: 'deepresearch', labelKey: 'navDeepResearch', icon: '⬡', planRequired: null    },
+  { id: 'calcola',      labelKey: 'navCalcola',      icon: '◎', planRequired: null    },
+  { id: 'history',      labelKey: 'navHistory',      icon: '◷', planRequired: 'basic' }, // ← era 'pro'
+  { id: 'storage',      labelKey: 'navStorage',      icon: '▦', planRequired: 'basic' }, // ← era 'pro'
 ];

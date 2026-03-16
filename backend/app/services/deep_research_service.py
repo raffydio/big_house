@@ -1,252 +1,411 @@
-"""
-services/deep_research_service.py  v3
-Deep Research — gli agenti CERCANO opportunità sul mercato
-a partire da una query libera dell'utente.
+# backend/app/services/deep_research_service.py
+#
+# AGGIORNATO: template few-shot inseriti nei backstory degli agenti.
+# Ogni agente conosce la struttura di output attesa e le formule corrette.
+# I dati reali vengono sempre cercati sul web tramite search_tool.
 
-AGGIORNATO: DeepSeek → Google Gemini 2.5 Pro via llm_factory
-"""
-import json
 import logging
+from typing import Optional
+
 from crewai import Agent, Task, Crew, Process
 
-from app.agents.llm_factory import get_llm   # ← unica riga che cambia rispetto a prima
-from app.models import DeepResearchResponse, FoundOpportunity
+from app.agents.llm_factory import get_llm
+from app.agents.search_tool import get_search_tool
 
 logger = logging.getLogger(__name__)
 
-DISCLAIMER = (
-    "⚠️ Questi risultati sono generati da intelligenza artificiale a scopo "
-    "puramente informativo. Non costituiscono consulenza finanziaria, "
-    "immobiliare o legale. Verifica sempre con un professionista qualificato "
-    "prima di prendere decisioni di investimento. — Big House AI è conforme "
-    "al Reg. UE 2024/1689 (AI Act) e alla Legge italiana 132/2025."
-)
+# ── Template few-shot ─────────────────────────────────────────────────────────
+# Estratti da agent_templates.md — versione compatta per i backstory
+
+_TEMPLATE_MARKET_SCOUT = """
+Sei un esperto analista di mercato immobiliare con 15 anni di esperienza.
+Conosci OMI, Immobiliare.it, Idealista, Tecnocasa, Nomisma e i principali
+portali internazionali. Cerchi SEMPRE dati reali sul web e non inventi mai
+prezzi o statistiche.
+
+PORTALI PER PAESE:
+- Italia: immobiliare.it, idealista.it, casa.it, realadvisor.it
+- Spagna: idealista.com, fotocasa.es
+- Portogallo: idealista.pt, imovirtual.com
+- Francia: seloger.com, leboncoin.fr
+- Germania: immoscout24.de, immowelt.de
+- UK: rightmove.co.uk, zoopla.co.uk
+- Olanda: funda.nl, pararius.nl
+- USA: zillow.com, realtor.com
+- UAE: propertyfinder.ae, bayut.com
+
+STRUTTURA OUTPUT OBBLIGATORIA per ogni città/zona analizzata:
+
+| Indicatore           | Valore          | Fonte          |
+|----------------------|-----------------|----------------|
+| Prezzo medio vendita | [DATO] €/mq     | [fonte + data] |
+| Prezzo medio affitto | [DATO] €/mq/mese| [fonte + data] |
+| Variazione YoY       | [DATO] %        | [fonte + data] |
+| Rendimento lordo     | ([affitto]×12)/[vendita]×100 = [DATO] % |
+| Trend                | CRESCITA/STABILE/CALO | [motivazione] |
+
+Quartieri più costosi (minimo 2): [nome]: [DATO] €/mq — [motivazione]
+Quartieri più economici (minimo 2): [nome]: [DATO] €/mq — [motivazione]
+
+REGOLA CRITICA: cerca SEMPRE il micro-mercato specifico (zona/quartiere),
+non la media della città. Cita URL e data per ogni dato numerico.
+Se un dato non è disponibile scrivi "dato non disponibile".
+"""
+
+_TEMPLATE_PROPERTY_ANALYST = """
+Sei un perito immobiliare certificato con esperienza in valutazioni
+per investimento. Usi solo dati documentati e formule precise.
+
+FORMULE UNIVERSALI DA APPLICARE SEMPRE:
+
+YIELD LORDO = (affitto mensile × 12) / prezzo acquisto × 100
+YIELD NETTO = (affitto annuo × 0,79 - spese condominiali annue) / prezzo acquisto × 100
+PAYBACK = prezzo acquisto / reddito netto annuo
+
+CANONE CONCORDATO: se zona alta tensione abitativa → cedolare 10% invece di 21%
+Ricalcola: yield netto = (affitto annuo × 0,90 - spese cond.) / prezzo × 100
+
+YIELD AIRBNB = (prezzo notte × notti occupate × 0,79 - costi gestione) / prezzo × 100
+Costi gestione Airbnb = 28% del ricavo lordo (pulizie + commissioni + utenze)
+Cerca tasso occupazione su bnbval.com o airdna.co per la zona specifica.
+
+SCORE INVESTIMENTO 0-100 = media ponderata:
+- Yield netto (peso 30%)
+- Scostamento prezzo da mercato (peso 25%)
+- Liquidità zona (peso 20%)
+- Potenziale flipping o rivalutazione (peso 25%)
+
+STRUTTURA OUTPUT per ogni immobile:
+
+Prezzo richiesto: [€] → [€/mq]
+Prezzo medio zona: [€/mq] (fonte: [URL])
+Scostamento: [+/-]% [sopra/sotto] mercato
+Canone mensile stimato: [€] (fonte: [URL])
+Yield lordo: [%] | Yield netto: [%] | Payback: [anni]
+Score investimento: [0-100] — [motivazione con pesi]
+Strategia consigliata: buy-to-let lungo / buy-to-let breve / flipping / evita
+
+VERDICT PER CONFRONTO (se più immobili):
+"Acquisterei [immobile X] perché [€/mq] vs media zona [€/mq],
+yield netto [%], margine [€] e tempo vendita stimato [mesi]."
+Massimo 5 righe. Sempre con numeri a supporto.
+"""
+
+_TEMPLATE_RISK_ASSESSOR = """
+Sei uno specialista in due diligence immobiliare e analisi di rischio.
+Valuti ogni fattore con evidenze concrete trovate sul web.
+
+CHECKLIST RISCHI DA VALUTARE (livello ALTO/MEDIO/BASSO):
+
+Per BUY-TO-LET:
+- Inquilino moroso: cerca dati sfratti/1000 contratti per la città
+- Normative affitti brevi: cerca aggiornamenti CIN e limiti giorni 2026
+- Deprezzamento: YoY prezzi zona → rischio se negativo o < 1%
+- Costi manutenzione: stima 1% valore immobile/anno
+
+Per FLIPPING:
+- Rischio mercato: previsioni prezzi zona 2026-2027
+- Rischio cantiere: sforamento medio 10-15% del budget ristrutturazione
+- Rischio liquidità: tempo medio vendita ristrutturati in zona
+- Vincoli urbanistici: piano regolatore, delibere condominiali
+
+TEMPLATE RISCHI:
+| Rischio           | Evidenza trovata sul web     | Livello | Mitigazione        |
+|-------------------|------------------------------|---------|--------------------|
+| [nome rischio]    | [dato reale con fonte]       | A/M/B   | [azione concreta]  |
+
+TEMPLATE OPPORTUNITÀ:
+| Opportunità        | Evidenza                     | Impatto stimato    |
+|--------------------|------------------------------|--------------------|
+| [nome opportunità] | [dato reale con fonte URL]   | +[%] valore stimato|
+
+Cerca sempre: piani di riqualificazione urbana, nuove infrastrutture metro,
+sviluppi residenziali, agevolazioni fiscali specifiche per la zona.
+
+Per FLIPPING cerca anche:
+FORMULA BREAK-EVEN PRICE = valore rivendita stimato - costi fissi
+  (ristrutturazione + notaio + agenzia + IMU)
+Se prezzo richiesto > break-even → segnalare come rischio critico.
+"""
+
+_TEMPLATE_INVESTMENT_STRATEGIST = """
+Sei un consulente d'investimento immobiliare senior. Le tue raccomandazioni
+includono sempre numeri precisi, orizzonte temporale e strategia di uscita.
+
+STRUTTURA OUTPUT OBBLIGATORIA:
+
+1. RISPOSTA DIRETTA alla query (1-2 frasi con numeri)
+
+2. TABELLA COMPARATIVA (se più immobili):
+| Metrica                    | Imm.A  | Imm.B  | Imm.C  |
+|----------------------------|--------|--------|--------|
+| Prezzo (€)                 | [DATO] | [DATO] | [DATO] |
+| €/mq                       | [DATO] | [DATO] | [DATO] |
+| Scostamento mercato (%)    | [DATO] | [DATO] | [DATO] |
+| Yield lordo (%)            | [DATO] | [DATO] | [DATO] |
+| Yield netto (%)            | [DATO] | [DATO] | [DATO] |
+| Payback (anni)             | [DATO] | [DATO] | [DATO] |
+| Margine flipping netto (%) | [DATO] | [DATO] | [DATO] |
+| Score 0-100                | [DATO] | [DATO] | [DATO] |
+| Strategia consigliata      | [txt]  | [txt]  | [txt]  |
+
+3. CLASSIFICA (dal migliore al peggiore):
+Rank 1: [immobile] — [motivazione con numeri]
+Rank N: [immobile] — [motivazione con numeri]
+
+4. STRATEGIA per il migliore:
+- Orizzonte temporale: [anni]
+- Rendimento atteso: [%] annuo
+- Exit strategy: [rivendita/affitto/altro]
+- Prezzo massimo acquisto (break-even): [€]
+
+5. AVVERTENZE (2-3 punti critici da verificare prima dell'acquisto)
+
+6. VERDICT FINALE:
+COMPRA ✓ / VALUTA CON CAUTELA ⚠️ / EVITA ✗
+con motivazione in 3 righe e numeri.
+
+FORMULE PER FLIPPING:
+MARGINE LORDO = prezzo rivendita - (acquisto + ristrutturazione + spese)
+MARGINE NETTO = margine lordo - (margine lordo × 0,26) [plusvalenza <5 anni]
+ROI ANNUALIZZATO = (margine netto / totale investimento / anni) × 100
+Spese standard: notaio 2% + agenzia 3% + IMU ~1% del prezzo acquisto
+
+FORMULA ROI TOTALE 5 ANNI:
+= [(cash-flow annuo × 5) + (valore futuro - investimento)] / investimento × 100
+Valore futuro = prezzo acquisto × (1 + crescita YoY)^5
+"""
 
 
-async def run_deep_research(query: str) -> DeepResearchResponse:
-    llm = get_llm()   # ← Gemini 2.5 Pro da llm_factory
+def run_deep_research(
+    query: str,
+    properties: list[dict],
+    plan: str = "free",
+    user_id: Optional[int] = None,
+) -> dict:
+    """
+    Deep Research immobiliare con 4 agenti specializzati.
+    I template few-shot nei backstory guidano struttura e formule.
+    I dati reali vengono cercati sul web durante l'esecuzione.
+    """
+    logger.info(
+        f"Deep Research START — user={user_id}, plan={plan}, "
+        f"properties={len(properties)}, query='{query[:60]}'"
+    )
 
-    # AGENT 1 — Market Scout
+    llm         = get_llm(plan=plan)
+    search_tool = get_search_tool(plan=plan)
+    props_text  = _format_properties(properties)
+
+    # ── Agente 1: Market Scout ────────────────────────────────────────────
     market_scout = Agent(
         role="Market Scout Immobiliare",
-        goal="Interpretare la query e identificare zona, budget, obiettivo. Stimare prezzi €/mq correnti.",
-        backstory="Esperto mercato immobiliare italiano 2025-2026. Dati realistici sempre.",
-        llm=llm, verbose=False, allow_delegation=False,
-    )
-    task_scout = Task(
-        description=(
-            f"Query investitore: '{query}'\n\n"
-            "Rispondi in JSON:\n"
-            "{\n"
-            '  "zona_target": "zona/città",\n'
-            '  "budget_max": numero euro,\n'
-            '  "size_min_sqm": numero mq,\n'
-            '  "obiettivo": "flipping|affitto_lungo|affitto_breve|prima_casa",\n'
-            '  "prezzo_medio_zona_mq": numero,\n'
-            '  "prezzo_ristrutturato_mq": numero,\n'
-            '  "market_context": "3-4 righe panoramica mercato zona"\n'
-            "}"
+        goal=(
+            "Trovare i prezzi reali di vendita e affitto per la zona "
+            "specifica di ogni immobile. Analizzare il micro-mercato "
+            "locale, non la media della città."
         ),
-        expected_output="JSON analisi richiesta e dati mercato",
+        backstory=_TEMPLATE_MARKET_SCOUT,
+        llm=llm,
+        tools=[search_tool] if search_tool else [],
+        verbose=True,
+        allow_delegation=False,
+    )
+
+    # ── Agente 2: Property Analyst ────────────────────────────────────────
+    property_analyst = Agent(
+        role="Property Analyst",
+        goal=(
+            "Valutare ogni immobile con le formule precise di yield lordo, "
+            "netto, payback e score 0-100. Confrontare con i prezzi reali "
+            "trovati dal Market Scout."
+        ),
+        backstory=_TEMPLATE_PROPERTY_ANALYST,
+        llm=llm,
+        tools=[search_tool] if search_tool else [],
+        verbose=True,
+        allow_delegation=False,
+    )
+
+    # ── Agente 3: Risk & Opportunity Assessor ─────────────────────────────
+    risk_assessor = Agent(
+        role="Risk & Opportunity Assessor",
+        goal=(
+            "Identificare rischi concreti e opportunità reali per ogni "
+            "immobile. Valutare ogni fattore ALTO/MEDIO/BASSO con "
+            "evidenze trovate sul web."
+        ),
+        backstory=_TEMPLATE_RISK_ASSESSOR,
+        llm=llm,
+        tools=[search_tool] if search_tool else [],
+        verbose=True,
+        allow_delegation=False,
+    )
+
+    # ── Agente 4: Investment Strategist ───────────────────────────────────
+    investment_strategist = Agent(
+        role="Investment Strategist Immobiliare",
+        goal=(
+            "Sintetizzare le analisi in una raccomandazione con tabella "
+            "comparativa, classifica, strategia e verdict finale con numeri."
+        ),
+        backstory=_TEMPLATE_INVESTMENT_STRATEGIST,
+        llm=llm,
+        verbose=True,
+        allow_delegation=False,
+    )
+
+    # ── Task 1: Analisi mercato ───────────────────────────────────────────
+    task_market = Task(
+        description=(
+            f"QUERY INVESTITORE: {query}\n\n"
+            f"PROPRIETÀ DA ANALIZZARE:\n{props_text}\n\n"
+            f"Per ogni proprietà:\n"
+            f"1. Cerca il micro-mercato SPECIFICO della zona (non la media città)\n"
+            f"2. Trova prezzi vendita €/mq per quella zona su portali locali\n"
+            f"3. Trova canoni affitto €/mq/mese per quella zona\n"
+            f"4. Trova variazione YoY prezzi e trend attuale\n"
+            f"5. Identifica i quartieri più costosi e più economici\n"
+            f"6. Cita URL e data per ogni dato — mai inventare numeri"
+        ),
+        expected_output=(
+            "Per ogni zona: prezzo vendita €/mq, affitto €/mq/mese, "
+            "YoY%, trend, quartieri costosi/economici. "
+            "Ogni dato con fonte URL citata."
+        ),
         agent=market_scout,
     )
 
-    # AGENT 2 — Zone Analyzer
-    zone_analyzer = Agent(
-        role="Zone Analyzer — Analista Territorio",
-        goal="Trend prezzi, rischi zona, domanda affitti, normativa affitti brevi.",
-        backstory="Specialista micro-mercati urbani italiani. Citi fonti: Tecnocasa, OMI, Idealista.",
-        llm=llm, verbose=False, allow_delegation=False,
-    )
-    task_zone = Task(
+    # ── Task 2: Valutazione immobili ──────────────────────────────────────
+    task_property = Task(
         description=(
-            "Dai dati del Market Scout, produci JSON:\n"
-            "{\n"
-            '  "trend_12m": "% crescita/calo prezzi ultimi 12 mesi",\n'
-            '  "previsione_12m": "stima prossimi 12 mesi",\n'
-            '  "fattori_positivi": ["lista"],\n'
-            '  "fattori_rischio": ["lista"],\n'
-            '  "domanda_affitti": "alta|media|bassa + motivazione",\n'
-            '  "normativa_airbnb": "situazione affitti brevi comune",\n'
-            '  "market_trend_text": "paragrafo per report"\n'
-            "}"
+            f"Usando i dati di mercato trovati, valuta ogni immobile:\n\n"
+            f"PROPRIETÀ:\n{props_text}\n\n"
+            f"Per ogni immobile applica le formule esatte:\n"
+            f"1. Calcola €/mq e scostamento dal mercato locale (%)\n"
+            f"2. Trova canone mensile reale per quella zona e tipologia\n"
+            f"3. Calcola yield lordo, yield netto (×0,79 - spese cond.), payback\n"
+            f"4. Se da ristrutturare: calcola margine flipping con formula\n"
+            f"   (notaio 2% + agenzia 3% + IMU 1% + costo ristr. da cronoshare.it)\n"
+            f"5. Assegna score 0-100 con media ponderata dei 4 fattori\n"
+            f"6. Indica strategia: buy-to-let lungo/breve/flipping/evita"
         ),
-        expected_output="JSON trend e rischi zona",
-        agent=zone_analyzer,
-        context=[task_scout],
+        expected_output=(
+            "Per ogni immobile: €/mq, scostamento%, yield lordo%, "
+            "yield netto%, payback anni, margine flipping% se applicabile, "
+            "score 0-100 con breakdown, strategia consigliata."
+        ),
+        agent=property_analyst,
+        context=[task_market],
     )
 
-    # AGENT 3 — Opportunity Ranker
-    opportunity_ranker = Agent(
-        role="Opportunity Ranker — Cacciatore di Opportunità",
-        goal="Genera 2-4 opportunità concrete e realistiche nella zona, compatibili col budget.",
-        backstory="Investment advisor immobiliare specializzato value-add Italia. Stime conservative e reali.",
-        llm=llm, verbose=False, allow_delegation=False,
-    )
-    task_opportunities = Task(
+    # ── Task 3: Rischi e opportunità ──────────────────────────────────────
+    task_risk = Task(
         description=(
-            "Genera array JSON di 2-4 opportunità ordinate per score decrescente.\n"
-            "Ogni elemento:\n"
-            "{\n"
-            '  "title": "descrizione breve",\n'
-            '  "estimated_price_range": "€X – €Y",\n'
-            '  "size_range": "X – Y mq",\n'
-            '  "zone": "sotto-zona specifica",\n'
-            '  "price_per_sqm": numero,\n'
-            '  "condition": "stato",\n'
-            '  "opportunity_score": numero 0-10,\n'
-            '  "roi_potential": "descrizione ROI",\n'
-            '  "renovation_estimate": "€X – €Y (livello)",\n'
-            '  "key_pros": ["pro1","pro2","pro3"],\n'
-            '  "key_cons": ["contro1","contro2"],\n'
-            '  "why_interesting": "paragrafo motivazione"\n'
-            "}\n"
-            "Solo dati realistici. No ROI gonfiati."
+            f"Analizza rischi e opportunità per ogni immobile:\n\n"
+            f"PROPRIETÀ:\n{props_text}\n\n"
+            f"Per ogni zona cerca:\n"
+            f"1. Dati sfratti/morosità per la città\n"
+            f"2. Aggiornamenti normative affitti brevi 2026 (CIN, limiti)\n"
+            f"3. Previsioni prezzi zona 2026-2027\n"
+            f"4. Piani riqualificazione urbana o nuove infrastrutture\n"
+            f"5. Per immobili da ristrutturare: calcola break-even price\n"
+            f"   (valore rivendita - costi fissi = prezzo max acquisto)\n"
+            f"Valuta ogni rischio: ALTO/MEDIO/BASSO con evidenza."
         ),
-        expected_output="Array JSON opportunità ordinate per score",
-        agent=opportunity_ranker,
-        context=[task_scout, task_zone],
+        expected_output=(
+            "Tabella rischi con livello A/M/B e fonte. "
+            "Tabella opportunità con impatto stimato. "
+            "Break-even price per immobili da ristrutturare."
+        ),
+        agent=risk_assessor,
+        context=[task_market, task_property],
     )
 
-    # AGENT 4 — Report Writer
-    report_writer = Agent(
-        role="Report Writer — Investment Advisor Senior",
-        goal="Sintesi finale: best pick motivato e action plan concreto in 5-7 passi.",
-        backstory="500+ investitori assistiti nel mercato italiano. Raccomandazioni concrete, non generiche.",
-        llm=llm, verbose=False, allow_delegation=False,
-    )
-    task_report = Task(
+    # ── Task 4: Raccomandazione finale ────────────────────────────────────
+    task_recommendation = Task(
         description=(
-            "Produci JSON finale:\n"
-            "{\n"
-            '  "best_pick": "quale opportunità scegliere e perché (2-3 righe)",\n'
-            '  "action_plan": "passi concreti numerati da fare subito",\n'
-            '  "comparison_summary": "tabella comparativa testuale opportunità"\n'
-            "}\n"
-            "Action plan specifico: es. '1. Contatta 3 agenzie zona X' non 'Valuta il mercato'."
+            f"Sintetizza tutto in una raccomandazione finale strutturata.\n\n"
+            f"QUERY ORIGINALE: {query}\n\n"
+            f"Produci OBBLIGATORIAMENTE:\n"
+            f"1. Risposta diretta alla query (1-2 frasi con numeri)\n"
+            f"2. Tabella comparativa con tutte le metriche per ogni immobile\n"
+            f"3. Classifica dal migliore al peggiore con motivazione numerica\n"
+            f"4. Strategia dettagliata per il primo classificato\n"
+            f"5. 2-3 avvertenze critiche da verificare prima dell'acquisto\n"
+            f"6. VERDICT: COMPRA ✓ / VALUTA CON CAUTELA ⚠️ / EVITA ✗\n"
+            f"   con motivazione in 3 righe e numeri a supporto"
         ),
-        expected_output="JSON best_pick, action_plan, comparison_summary",
-        agent=report_writer,
-        context=[task_scout, task_zone, task_opportunities],
+        expected_output=(
+            "Risposta diretta, tabella comparativa completa, classifica "
+            "motivata, strategia con numeri, avvertenze, verdict finale."
+        ),
+        agent=investment_strategist,
+        context=[task_market, task_property, task_risk],
     )
 
+    # ── Lancia crew ───────────────────────────────────────────────────────
     crew = Crew(
-        agents=[market_scout, zone_analyzer, opportunity_ranker, report_writer],
-        tasks=[task_scout, task_zone, task_opportunities, task_report],
+        agents=[market_scout, property_analyst, risk_assessor, investment_strategist],
+        tasks=[task_market, task_property, task_risk, task_recommendation],
         process=Process.sequential,
-        verbose=False,
+        verbose=True,
     )
 
-    try:
-        crew.kickoff()
-    except Exception as e:
-        logger.error(f"Crew error: {e}")
-        raise RuntimeError(f"Errore agenti AI: {e}")
+    logger.info("CrewAI kickoff...")
+    result = crew.kickoff()
+    logger.info("CrewAI completato")
 
-    # ── Parsing output agenti ──
-    scout_data  = _parse_json(task_scout.output.raw if task_scout.output else "")
-    zone_data   = _parse_json(task_zone.output.raw if task_zone.output else "")
-    opps_data   = _parse_json_list(task_opportunities.output.raw if task_opportunities.output else "")
-    report_data = _parse_json(task_report.output.raw if task_report.output else "")
+    task_outputs = result.tasks_output if hasattr(result, "tasks_output") else []
 
-    opportunities = []
-    for opp in opps_data[:4]:
+    def get_output(idx: int) -> str:
         try:
-            opportunities.append(FoundOpportunity(
-                title=opp.get("title", "Opportunità immobiliare"),
-                estimated_price_range=opp.get("estimated_price_range", "N/D"),
-                size_range=opp.get("size_range", "N/D"),
-                zone=opp.get("zone", scout_data.get("zona_target", "N/D")),
-                price_per_sqm=float(opp.get("price_per_sqm", 0)),
-                condition=opp.get("condition", "Da ristrutturare"),
-                opportunity_score=float(opp.get("opportunity_score", 7.0)),
-                roi_potential=opp.get("roi_potential", "N/D"),
-                renovation_estimate=opp.get("renovation_estimate", "N/D"),
-                key_pros=opp.get("key_pros", []),
-                key_cons=opp.get("key_cons", []),
-                why_interesting=opp.get("why_interesting", ""),
-            ))
+            return str(task_outputs[idx].raw) if idx < len(task_outputs) else ""
         except Exception:
-            continue
+            return ""
 
-    if not opportunities:
-        opportunities = _fallback_opportunity(query, scout_data)
-
-    return DeepResearchResponse(
-        market_context=_to_str(scout_data.get("market_context", "")),
-        opportunities=opportunities,
-        best_pick=_to_str(report_data.get("best_pick", "Vedi opportunità trovate.")),
-        market_trend=_to_str(zone_data.get("market_trend_text", "")),
-        action_plan=_to_str(report_data.get("action_plan", "")),
-        comparison_summary=_to_str(report_data.get("comparison_summary", "")),
-        disclaimer=DISCLAIMER,
-        remaining_usage=0,
-    )
+    return {
+        "summary":                   str(result),
+        "market_overview":           get_output(0),
+        "properties_analysis":       _parse_properties_analysis(get_output(1), properties),
+        "risks_opportunities":       get_output(2),
+        "investment_recommendation": get_output(3),
+        "remaining_usage":           None,
+    }
 
 
-# ── Helpers parsing ────────────────────────────────────────────
-
-def _parse_json(raw: str) -> dict:
-    if not raw:
-        return {}
-    cleaned = raw.strip()
-    if "```" in cleaned:
-        for part in cleaned.split("```"):
-            p = part.lstrip("json").strip()
-            if p.startswith("{"):
-                cleaned = p
-                break
-    try:
-        return json.loads(cleaned)
-    except Exception:
-        s, e = cleaned.find("{"), cleaned.rfind("}") + 1
-        if s != -1 and e > s:
-            try:
-                return json.loads(cleaned[s:e])
-            except Exception:
-                pass
-    return {}
+def _format_properties(properties: list[dict]) -> str:
+    if not properties:
+        return "Nessuna proprietà specificata."
+    parts = []
+    for i, p in enumerate(properties, 1):
+        lines = [f"Proprietà {i}:"]
+        if p.get("address"):   lines.append(f"  Indirizzo:  {p['address']}")
+        if p.get("price"):     lines.append(f"  Prezzo:     {p['price']:,.0f} €")
+        if p.get("size_sqm"):  lines.append(f"  Superficie: {p['size_sqm']} mq")
+        if p.get("price") and p.get("size_sqm"):
+            lines.append(f"  €/mq:       {p['price'] / p['size_sqm']:,.0f}")
+        if p.get("rooms"):     lines.append(f"  Locali:     {p['rooms']}")
+        if p.get("condition"): lines.append(f"  Condizioni: {p['condition']}")
+        if p.get("notes"):     lines.append(f"  Note:       {p['notes']}")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
-def _parse_json_list(raw: str) -> list:
-    if not raw:
-        return []
-    cleaned = raw.strip()
-    if "```" in cleaned:
-        for part in cleaned.split("```"):
-            p = part.lstrip("json").strip()
-            if p.startswith("["):
-                cleaned = p
-                break
-    s, e = cleaned.find("["), cleaned.rfind("]") + 1
-    if s != -1 and e > s:
-        try:
-            return json.loads(cleaned[s:e])
-        except Exception:
-            pass
-    obj = _parse_json(cleaned)
-    return [obj] if obj else []
-
-
-def _fallback_opportunity(query: str, scout: dict) -> list:
-    return [FoundOpportunity(
-        title=f"Opportunità in {scout.get('zona_target', 'zona cercata')}",
-        estimated_price_range=f"Entro €{scout.get('budget_max', 200000):,.0f}",
-        size_range=f"Da {scout.get('size_min_sqm', 60)} mq",
-        zone=scout.get("zona_target", "Zona ricercata"),
-        price_per_sqm=float(scout.get("prezzo_medio_zona_mq", 2500)),
-        condition="Da ristrutturare",
-        opportunity_score=7.0,
-        roi_potential="Da verificare con agente locale",
-        renovation_estimate="€600 – €1.000/mq",
-        key_pros=["Zona compatibile con budget", "Mercato in crescita"],
-        key_cons=["Stima generica — verificare con sopralluogo"],
-        why_interesting=f"Ricerca: {query[:200]}. Contatta agenzie locali per offerte aggiornate.",
-    )]
-
-
-def _to_str(val) -> str:
-    """Converte lista o qualsiasi tipo in stringa — i modelli a volte restituiscono liste invece di stringhe."""
-    if isinstance(val, list):
-        return "\n".join(str(v) for v in val)
-    return str(val) if val else ""
+def _parse_properties_analysis(raw_text: str, properties: list[dict]) -> list[dict]:
+    if not raw_text:
+        return [
+            {"address": p.get("address", f"Proprietà {i+1}"),
+             "recommendation": "Analisi non disponibile",
+             "risks": [], "opportunities": []}
+            for i, p in enumerate(properties)
+        ]
+    return [
+        {"address":        p.get("address", f"Proprietà {i+1}"),
+         "price_asked":    p.get("price"),
+         "size_sqm":       p.get("size_sqm"),
+         "recommendation": raw_text,
+         "risks":          [],
+         "opportunities":  []}
+        for i, p in enumerate(properties)
+    ]

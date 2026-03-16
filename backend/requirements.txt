@@ -19,10 +19,14 @@ httpx
 
 # ── AI Ecosystem (Gemini & Orchestration) ──
 crewai[google-genai]>=0.30.0
-
 crewai-tools
 litellm
 google-generativeai
+google-genai              # SDK nativo Gemini per Google Search Grounding
+
+# ── Web Search — Cascata Google → Tavily → DuckDuckGo ──
+tavily-python             # Fallback 1 — $0.008/query, PAYGO — richiede TAVILY_API_KEY
+duckduckgo-search         # Fallback 2 — gratis, zero API key, sempre disponibile
 
 # ── Integrazioni & Utility ──
 stripe

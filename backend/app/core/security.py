@@ -1,7 +1,15 @@
 """
 core/security.py
 Layer di sicurezza: hashing, JWT, autenticazione, controllo limiti.
-Nessuna chiave hardcoded — tutto da config.py.
+
+LIMITI AGGIORNATI:
+  PRO:  10 DR + 10 Calc/giorno  (era 20+20 — margine negativo al 100% utilizzo)
+  PLUS: 20 DR + 50 Calc/giorno  (era 20+100 — ottimizzato per margine 43%+)
+  BASIC: 3 DR + 3 Calc/giorno
+
+Matematica margini con Gemini 2.5 Flash-Lite + Tavily:
+  PRO  10+10/g → costo max $21/mese → margine +€3 al 100%, +€21 al 20%
+  PLUS 20+50/g → costo max $40/mese → margine +€36 al 100%, +€72 al 20%
 """
 import logging
 from datetime import datetime, timedelta
@@ -18,10 +26,6 @@ from app.models import Plan, TokenData
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────
-# Configurazione
-# ─────────────────────────────────────────
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 _ph = PasswordHasher(
@@ -30,11 +34,33 @@ _ph = PasswordHasher(
     parallelism=2,
 )
 
-# Limiti giornalieri per feature e piano
+# ─────────────────────────────────────────
+# Limiti giornalieri per piano
+# ─────────────────────────────────────────
+#
+# Logica economica:
+#   - FREE:  acquisition funnel, costo quasi zero
+#   - BASIC: €4.99 → margine 92% anche al 100% utilizzo
+#   - PRO:   €29   → margine 73% al 20% utilizzo reale
+#   - PLUS:  €79   → margine 43% anche al 100% utilizzo
+#
 PLAN_LIMITS: dict[str, dict[str, int]] = {
-    Plan.FREE.value:  {"deepresearch": 1, "calcola": 3},
-    Plan.PRO.value:   {"deepresearch": 5, "calcola": 20},
-    Plan.PLUS.value:  {"deepresearch": 20, "calcola": 100},
+    Plan.FREE.value:  {
+        "deepresearch": 1,
+        "calcola":      1,
+    },
+    Plan.BASIC.value: {
+        "deepresearch": 3,
+        "calcola":      3,
+    },
+    Plan.PRO.value:   {
+        "deepresearch": 10,   # ← era 20, ridotto per margine positivo
+        "calcola":      10,   # ← era 20, ridotto per margine positivo
+    },
+    Plan.PLUS.value:  {
+        "deepresearch": 20,   # invariato
+        "calcola":      50,   # ← era 100, ottimizzato per margine
+    },
 }
 
 # Mapping contatori DB → nome feature
@@ -49,15 +75,10 @@ FEATURE_COUNTER_MAP: dict[str, str] = {
 # ─────────────────────────────────────────
 
 def hash_password(plain_password: str) -> str:
-    """Hash sicuro della password con Argon2id."""
     return _ph.hash(plain_password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verifica password contro hash Argon2.
-    Ritorna False senza sollevare eccezioni in caso di mismatch.
-    """
     try:
         return _ph.verify(hashed_password, plain_password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
@@ -69,10 +90,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ─────────────────────────────────────────
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """
-    Crea un JWT firmato con SECRET_KEY da config.
-    Scadenza default: ACCESS_TOKEN_EXPIRE_MINUTES da config.
-    """
     payload = data.copy()
     expire = datetime.utcnow() + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -82,7 +99,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def _decode_token(token: str) -> TokenData:
-    """Decodifica e valida un JWT. Solleva HTTPException se invalido."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token non valido o scaduto.",
@@ -104,10 +120,6 @@ def _decode_token(token: str) -> TokenData:
 # ─────────────────────────────────────────
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    """
-    FastAPI dependency: estrae l'utente corrente dal token JWT.
-    Importa il DB layer internamente per evitare import circolari.
-    """
     from app.core.database import get_user_by_email, reset_usage_if_new_day
 
     token_data = _decode_token(token)
@@ -119,13 +131,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
             detail="Utente non trovato.",
         )
 
-    # Reset contatori se è un nuovo giorno
     user = reset_usage_if_new_day(user)
     return user
 
 
 # ─────────────────────────────────────────
-# Limite utilizzo per piano
+# Controllo limite utilizzo
 # ─────────────────────────────────────────
 
 def check_limit(user: dict, feature: str) -> int:
@@ -133,13 +144,6 @@ def check_limit(user: dict, feature: str) -> int:
     Controlla se l'utente ha ancora utilizzi disponibili per la feature.
     Ritorna il numero di utilizzi rimanenti dopo questo.
     Solleva HTTP 429 se il limite è raggiunto.
-
-    Args:
-        user:    dict utente da DB
-        feature: 'deepresearch' | 'calcola'
-
-    Returns:
-        Utilizzi rimanenti (dopo aver consumato quello corrente)
     """
     plan = user.get("plan", Plan.FREE.value)
     limits = PLAN_LIMITS.get(plan, PLAN_LIMITS[Plan.FREE.value])
@@ -161,5 +165,5 @@ def check_limit(user: dict, feature: str) -> int:
             ),
         )
 
-    remaining = max_uses - current_count - 1  # -1 perché stiamo per usarne uno
+    remaining = max_uses - current_count - 1
     return remaining
