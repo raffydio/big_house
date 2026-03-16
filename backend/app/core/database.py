@@ -1,7 +1,6 @@
 """
 core/database.py
-Database layer con SQLite (pronto per migrazione PostgreSQL).
-Tutte le operazioni DB sono qui, nessuna logica altrove.
+CORRETTO: aggiunta get_db_connection() pubblica — richiesta da storage_manager.py
 """
 import sqlite3
 import logging
@@ -37,20 +36,54 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
+CREATE_CHAT_SESSIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    feature     TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    file_path   TEXT,
+    size_bytes  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_USER_STORAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS user_storage (
+    user_id     INTEGER PRIMARY KEY,
+    used_bytes  INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
 # ─────────────────────────────────────────
-# Connessione & Init
+# Connessione
 # ─────────────────────────────────────────
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(settings.DATABASE_URL.replace("sqlite:///", ""))
+    """Connessione interna — uso diretto per operazioni senza context manager."""
+    db_path = settings.DATABASE_URL.replace("sqlite:///", "").replace("sqlite://", "")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
+def get_db_connection() -> sqlite3.Connection:
+    """
+    Connessione pubblica — usata da storage_manager.py e altri moduli
+    che gestiscono il ciclo di vita della connessione manualmente.
+    Il chiamante è responsabile di chiuderla con conn.close().
+    """
+    return _get_connection()
+
+
 @contextmanager
 def get_db() -> Generator[sqlite3.Connection, None, None]:
+    """Context manager per operazioni DB con commit/rollback automatico."""
     conn = _get_connection()
     try:
         yield conn
@@ -69,7 +102,8 @@ def init_db() -> None:
     Esegue anche le migrazioni necessarie su DB esistenti.
     """
     try:
-        with _get_connection() as conn:
+        conn = _get_connection()
+        with conn:
             conn.execute(CREATE_USERS_TABLE)
             conn.execute(CREATE_CHAT_SESSIONS_TABLE)
             conn.execute(CREATE_USER_STORAGE_TABLE)
@@ -79,11 +113,11 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE users ADD COLUMN google_id TEXT UNIQUE")
                 logger.info("Migrazione DB: colonna google_id aggiunta.")
             except Exception:
-                pass  # Colonna già presente
+                pass
 
             # ── Migrazione: rende hashed_password nullable ──
             cursor = conn.execute("PRAGMA table_info(users)")
-            cols = {row[1]: row[3] for row in cursor.fetchall()}  # name: notnull
+            cols = {row[1]: row[3] for row in cursor.fetchall()}
             if cols.get("hashed_password") == 1:
                 logger.info("Migrazione DB: rendendo hashed_password nullable...")
                 conn.execute("ALTER TABLE users RENAME TO users_old")
@@ -99,7 +133,7 @@ def init_db() -> None:
                 conn.execute("DROP TABLE users_old")
                 logger.info("Migrazione DB completata.")
 
-            # ── Migrazione: colonne Stripe ──
+            # ── Migrazioni Stripe ──
             stripe_migrations = [
                 "ALTER TABLE users ADD COLUMN stripe_customer_id TEXT",
                 "ALTER TABLE users ADD COLUMN stripe_subscription_id TEXT",
@@ -111,10 +145,11 @@ def init_db() -> None:
                     conn.execute(sql)
                     logger.info(f"Migrazione Stripe: {sql[:60]}...")
                 except Exception:
-                    pass  # Colonna già presente
+                    pass
 
             conn.commit()
-        logger.info("Database inizializzato correttamente (v3 + Google OAuth + Stripe).")
+        conn.close()
+        logger.info("Database inizializzato correttamente.")
     except Exception as e:
         logger.critical(f"Errore inizializzazione DB: {e}")
         raise
@@ -126,35 +161,30 @@ def init_db() -> None:
 
 def get_user_by_email(email: str) -> Optional[dict]:
     with get_db() as conn:
-        cursor = conn.execute(
+        row = conn.execute(
             "SELECT * FROM users WHERE email = ?", (email.lower(),)
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         return dict(row) if row else None
 
 
 def get_user_by_id(user_id: int) -> Optional[dict]:
     with get_db() as conn:
-        cursor = conn.execute(
+        row = conn.execute(
             "SELECT * FROM users WHERE id = ?", (user_id,)
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         return dict(row) if row else None
 
 
 def get_user_by_google_id(google_id: str) -> Optional[dict]:
-    """Recupera utente tramite Google ID."""
     with get_db() as conn:
-        cursor = conn.execute(
+        row = conn.execute(
             "SELECT * FROM users WHERE google_id = ?", (google_id,)
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         return dict(row) if row else None
 
 
 def create_user(email: str, name: str, hashed_password: str) -> dict:
-    """Crea utente con email + password."""
-    now = datetime.utcnow().isoformat()
+    now   = datetime.utcnow().isoformat()
     today = date.today().isoformat()
     with get_db() as conn:
         conn.execute(
@@ -172,8 +202,7 @@ def create_user(email: str, name: str, hashed_password: str) -> dict:
 
 
 def create_google_user(email: str, name: str, google_id: str) -> dict:
-    """Crea utente registrato tramite Google OAuth (senza password)."""
-    now = datetime.utcnow().isoformat()
+    now   = datetime.utcnow().isoformat()
     today = date.today().isoformat()
     with get_db() as conn:
         conn.execute(
@@ -191,7 +220,6 @@ def create_google_user(email: str, name: str, google_id: str) -> dict:
 
 
 def link_google_to_existing_user(email: str, google_id: str) -> None:
-    """Collega Google ID a un account già esistente (email+password)."""
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET google_id = ? WHERE email = ?",
@@ -251,44 +279,31 @@ def update_user_stripe(
     stripe_subscription_id: str = None,
     trial_ends_at: str = None,
 ) -> None:
-    """Aggiorna i campi Stripe dell'utente."""
-    updates = []
-    values = []
-
+    updates, values = [], []
     if stripe_customer_id is not None:
-        updates.append("stripe_customer_id = ?")
-        values.append(stripe_customer_id)
+        updates.append("stripe_customer_id = ?"); values.append(stripe_customer_id)
     if stripe_subscription_id is not None:
-        updates.append("stripe_subscription_id = ?")
-        values.append(stripe_subscription_id)
+        updates.append("stripe_subscription_id = ?"); values.append(stripe_subscription_id)
     if trial_ends_at is not None:
-        updates.append("trial_ends_at = ?")
-        values.append(trial_ends_at)
-
+        updates.append("trial_ends_at = ?"); values.append(trial_ends_at)
     if not updates:
         return
-
     values.append(email.lower())
     with get_db() as conn:
         conn.execute(
-            f"UPDATE users SET {', '.join(updates)} WHERE email = ?",
-            values,
+            f"UPDATE users SET {', '.join(updates)} WHERE email = ?", values
         )
 
 
 def get_user_by_stripe_customer_id(customer_id: str) -> Optional[dict]:
-    """Recupera utente tramite Stripe customer ID."""
     with get_db() as conn:
-        cursor = conn.execute(
-            "SELECT * FROM users WHERE stripe_customer_id = ?",
-            (customer_id,),
-        )
-        row = cursor.fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE stripe_customer_id = ?", (customer_id,)
+        ).fetchone()
         return dict(row) if row else None
 
 
 def update_user_trial(email: str, trial_used: bool = True) -> None:
-    """Segna che l'utente ha già usato il trial gratuito."""
     with get_db() as conn:
         conn.execute(
             "UPDATE users SET trial_used = ? WHERE email = ?",
@@ -297,13 +312,11 @@ def update_user_trial(email: str, trial_used: bool = True) -> None:
 
 
 def has_used_trial(email: str) -> bool:
-    """Controlla se l'utente ha già usato il trial gratuito."""
     user = get_user_by_email(email)
     return bool(user and user.get("trial_used", 0))
 
 
 def is_trial_active(user: dict) -> bool:
-    """Controlla se il trial è ancora attivo."""
     trial_ends_at = user.get("trial_ends_at")
     if not trial_ends_at:
         return False
@@ -314,62 +327,37 @@ def is_trial_active(user: dict) -> bool:
         return False
 
 
-# ═══════════════════════════════════════════
-# Tabelle: chat sessions + storage
-# ═══════════════════════════════════════════
-
-CREATE_CHAT_SESSIONS_TABLE = """
-CREATE TABLE IF NOT EXISTS chat_sessions (
-    id          TEXT PRIMARY KEY,
-    user_id     INTEGER NOT NULL,
-    feature     TEXT NOT NULL,
-    title       TEXT NOT NULL DEFAULT '',
-    file_path   TEXT,
-    size_bytes  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-"""
-
-CREATE_USER_STORAGE_TABLE = """
-CREATE TABLE IF NOT EXISTS user_storage (
-    user_id     INTEGER PRIMARY KEY,
-    used_bytes  INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-"""
-
+# ─────────────────────────────────────────
+# Chat sessions + storage
+# ─────────────────────────────────────────
 
 def get_chat_sessions(user_id: int) -> list:
     import json, os
     with get_db() as conn:
-        cursor = conn.execute(
+        rows = conn.execute(
             """
             SELECT id, feature, title, file_path, size_bytes, created_at
             FROM chat_sessions WHERE user_id = ?
             ORDER BY created_at DESC LIMIT 200
             """,
             (user_id,),
-        )
-        rows = cursor.fetchall()
+        ).fetchall()
     sessions = []
     for row in rows:
-        row_dict = dict(row)
-        file_path = row_dict.get("file_path")
+        d = dict(row)
         messages = []
-        if file_path and os.path.exists(file_path):
+        fp = d.get("file_path")
+        if fp and os.path.exists(fp):
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    messages = data.get("messages", [])
+                with open(fp, "r", encoding="utf-8") as f:
+                    messages = json.load(f).get("messages", [])
             except Exception:
                 pass
         sessions.append({
-            "id":         row_dict["id"],
-            "feature":    row_dict["feature"],
-            "title":      row_dict["title"],
-            "created_at": row_dict["created_at"],
+            "id":         d["id"],
+            "feature":    d["feature"],
+            "title":      d["title"],
+            "created_at": d["created_at"],
             "messages":   messages,
         })
     return sessions
@@ -405,13 +393,11 @@ def save_chat_session(
 
 def delete_chat_session(user_id: int, session_id: str) -> None:
     with get_db() as conn:
-        cursor = conn.execute(
+        row = conn.execute(
             "SELECT size_bytes FROM chat_sessions WHERE id = ? AND user_id = ?",
             (session_id, user_id),
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         if row:
-            size_bytes = row["size_bytes"]
             conn.execute(
                 "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
                 (session_id, user_id),
@@ -422,14 +408,13 @@ def delete_chat_session(user_id: int, session_id: str) -> None:
                 SET used_bytes = MAX(0, used_bytes - ?), updated_at = ?
                 WHERE user_id = ?
                 """,
-                (size_bytes, datetime.utcnow().isoformat(), user_id),
+                (row["size_bytes"], datetime.utcnow().isoformat(), user_id),
             )
 
 
 def get_user_storage_bytes(user_id: int) -> int:
     with get_db() as conn:
-        cursor = conn.execute(
+        row = conn.execute(
             "SELECT used_bytes FROM user_storage WHERE user_id = ?", (user_id,)
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         return row["used_bytes"] if row else 0
