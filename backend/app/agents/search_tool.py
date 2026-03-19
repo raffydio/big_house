@@ -24,7 +24,7 @@ import os
 import logging
 from typing import Optional
 
-from crewai.tools import tool
+from crewai.tools import tool   # ← corretto per CrewAI 1.10.x
 
 logger = logging.getLogger(__name__)
 
@@ -40,44 +40,23 @@ class SearchExhaustedError(Exception):
 
 # ─────────────────────────────────────────────
 # Provider 1 — Google Search Tool nativo
-# Usa google.genai con grounding GoogleSearch
-# Disponibile SOLO quando LLM è Gemini
 # ─────────────────────────────────────────────
 
 def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
-    """
-    Esegue una ricerca web tramite Google Search grounding nativo.
-    Usa il nuovo SDK google.genai (non google.generativeai).
-
-    Args:
-        query: Stringa di ricerca
-        model: Modello Gemini da usare per il grounding
-
-    Returns:
-        Testo con i risultati della ricerca
-
-    Raises:
-        Exception: Se la chiamata API fallisce (429, 503, ecc.)
-    """
     from google import genai
     from google.genai import types
 
-    # Il client legge GEMINI_API_KEY dall'ambiente automaticamente
     client = genai.Client()
-
-    grounding_tool = types.Tool(
-        google_search=types.GoogleSearch()
-    )
-
-    config = types.GenerateContentConfig(
-        tools=[grounding_tool]
-    )
+    grounding_tool = types.Tool(google_search=types.GoogleSearch())
+    config = types.GenerateContentConfig(tools=[grounding_tool])
 
     response = client.models.generate_content(
         model=model,
-        contents=f"Cerca informazioni aggiornate su: {query}. "
-                 f"Fornisci dati numerici specifici se disponibili "
-                 f"(prezzi €/mq, rendimenti, trend di mercato).",
+        contents=(
+            f"Cerca informazioni aggiornate su: {query}. "
+            f"Fornisci dati numerici specifici se disponibili "
+            f"(prezzi €/mq, rendimenti, trend di mercato)."
+        ),
         config=config,
     )
 
@@ -90,23 +69,9 @@ def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
 
 # ─────────────────────────────────────────────
 # Provider 2 — DuckDuckGo
-# Zero costo, disponibile in entrambe le modalità
 # ─────────────────────────────────────────────
 
 def _search_duckduckgo(query: str, max_results: int = 5) -> str:
-    """
-    Esegue una ricerca tramite DuckDuckGo (libreria duckduckgo-search).
-
-    Args:
-        query: Stringa di ricerca
-        max_results: Numero massimo di risultati (default 5)
-
-    Returns:
-        Testo concatenato dei risultati
-
-    Raises:
-        Exception: Se la ricerca fallisce o restituisce 0 risultati
-    """
     from duckduckgo_search import DDGS
 
     with DDGS() as ddgs:
@@ -115,13 +80,9 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> str:
     if not results:
         raise ValueError("DuckDuckGo non ha restituito risultati")
 
-    # Formatta i risultati in testo leggibile dagli agenti
     formatted = []
     for i, r in enumerate(results, 1):
-        title = r.get("title", "")
-        body = r.get("body", "")
-        href = r.get("href", "")
-        formatted.append(f"{i}. {title}\n{body}\nFonte: {href}")
+        formatted.append(f"{i}. {r.get('title','')}\n{r.get('body','')}\nFonte: {r.get('href','')}")
 
     logger.info(f"[search_tool] DuckDuckGo OK — {len(results)} risultati per: {query[:50]}...")
     return "\n\n".join(formatted)
@@ -129,26 +90,9 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> str:
 
 # ─────────────────────────────────────────────
 # Provider 3 — Brave Search API
-# Pay-as-you-go, $5 crediti gratuiti/mese
-# Disponibile in entrambe le modalità come fallback finale
 # ─────────────────────────────────────────────
 
 def _search_brave(query: str, count: int = 5) -> str:
-    """
-    Esegue una ricerca tramite Brave Search API.
-
-    Richiede: BRAVE_SEARCH_API_KEY nel .env
-
-    Args:
-        query: Stringa di ricerca
-        count: Numero di risultati (default 5, max 20)
-
-    Returns:
-        Testo concatenato dei risultati
-
-    Raises:
-        Exception: Se la chiamata API fallisce o la chiave non è configurata
-    """
     import requests
 
     api_key = os.getenv("BRAVE_SEARCH_API_KEY")
@@ -157,19 +101,10 @@ def _search_brave(query: str, count: int = 5) -> str:
 
     response = requests.get(
         "https://api.search.brave.com/res/v1/web/search",
-        headers={
-            "X-Subscription-Token": api_key,
-            "Accept": "application/json",
-        },
-        params={
-            "q": query,
-            "count": count,
-            "country": "it",
-            "search_lang": "it",
-        },
+        headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
+        params={"q": query, "count": count, "country": "it", "search_lang": "it"},
         timeout=10,
     )
-
     response.raise_for_status()
     data = response.json()
 
@@ -179,10 +114,7 @@ def _search_brave(query: str, count: int = 5) -> str:
 
     formatted = []
     for i, r in enumerate(web_results, 1):
-        title = r.get("title", "")
-        description = r.get("description", "")
-        url = r.get("url", "")
-        formatted.append(f"{i}. {title}\n{description}\nFonte: {url}")
+        formatted.append(f"{i}. {r.get('title','')}\n{r.get('description','')}\nFonte: {r.get('url','')}")
 
     logger.info(f"[search_tool] Brave Search OK — {len(web_results)} risultati per: {query[:50]}...")
     return "\n\n".join(formatted)
@@ -199,28 +131,13 @@ def get_search_results(
 ) -> str:
     """
     Esegue la ricerca web con cascata di fallback.
-
     Modalità GEMINI:  Google Search → DuckDuckGo → Brave
     Modalità CLAUDE:  DuckDuckGo → Brave
-
-    Args:
-        query:         Stringa di ricerca
-        mode:          "gemini" oppure "claude"
-        gemini_model:  Modello Gemini override (default: GEMINI_MODEL_OVERRIDE o gemini-2.5-flash)
-
-    Returns:
-        Testo con i risultati della ricerca
-
-    Raises:
-        SearchExhaustedError: Se tutti i provider hanno fallito
     """
     model = gemini_model or os.getenv("GEMINI_MODEL_OVERRIDE", "gemini/gemini-2.5-flash")
-    # LiteLLM usa il prefisso "gemini/" — google.genai vuole solo il nome del modello
     model_name = model.replace("gemini/", "")
-
     providers_tried = []
 
-    # ── Modalità GEMINI: prova prima Google Search nativo ──
     if mode == "gemini":
         try:
             return _search_google(query, model=model_name)
@@ -228,30 +145,47 @@ def get_search_results(
             providers_tried.append(f"Google Search: {type(e).__name__} — {str(e)[:80]}")
             logger.warning(f"[search_tool] Google Search fallito, passo a DuckDuckGo. Errore: {e}")
 
-    # ── Entrambe le modalità: prova DuckDuckGo ──
     try:
         return _search_duckduckgo(query)
     except Exception as e:
         providers_tried.append(f"DuckDuckGo: {type(e).__name__} — {str(e)[:80]}")
         logger.warning(f"[search_tool] DuckDuckGo fallito, passo a Brave. Errore: {e}")
 
-    # ── Entrambe le modalità: prova Brave Search ──
     try:
         return _search_brave(query)
     except Exception as e:
         providers_tried.append(f"Brave Search: {type(e).__name__} — {str(e)[:80]}")
-        logger.error(f"[search_tool] Brave Search fallito. Tutti i provider esauriti.")
+        logger.error("[search_tool] Brave Search fallito. Tutti i provider esauriti.")
 
-    # ── Tutti i provider hanno fallito ──
-    error_detail = " | ".join(providers_tried)
     raise SearchExhaustedError(
-        f"Tutti i provider di ricerca hanno fallito per la query '{query[:50]}': {error_detail}"
+        f"Tutti i provider di ricerca hanno fallito per la query '{query[:50]}': {' | '.join(providers_tried)}"
     )
 
 
 # ─────────────────────────────────────────────
+# get_search_tool() — compatibilità con i service
+# Richiesta da deep_research_service.py e calculation_service.py
+# ─────────────────────────────────────────────
+
+def get_search_tool(plan: str = "free", mode: str = "gemini"):
+    """
+    Factory function richiesta dai service.
+    Restituisce il tool CrewAI appropriato in base alla modalità LLM.
+
+    Args:
+        plan: Piano utente (reserved per futura logica)
+        mode: "gemini" oppure "claude"
+
+    Returns:
+        Tool CrewAI da passare agli agenti
+    """
+    if mode == "claude":
+        return ricerca_immobiliare_claude
+    return ricerca_immobiliare
+
+
+# ─────────────────────────────────────────────
 # CrewAI Tool — Modalità GEMINI
-# Aggiunto agli agenti quando LLM è Gemini
 # ─────────────────────────────────────────────
 
 @tool("Ricerca Immobiliare Web")
@@ -259,13 +193,7 @@ def ricerca_immobiliare(query: str) -> str:
     """
     Cerca informazioni aggiornate sul mercato immobiliare italiano.
     Usa Google Search con fallback su DuckDuckGo e Brave Search.
-    Fornisce prezzi €/mq, rendimenti, trend di zona, dati catastali.
-
-    Args:
-        query: La ricerca da effettuare (es. "prezzi immobili Milano Navigli 2026")
-
-    Returns:
-        Risultati di ricerca aggiornati dal web
+    Fornisce prezzi euro/mq, rendimenti, trend di zona, dati catastali.
     """
     try:
         return get_search_results(query, mode="gemini")
@@ -280,7 +208,6 @@ def ricerca_immobiliare(query: str) -> str:
 
 # ─────────────────────────────────────────────
 # CrewAI Tool — Modalità CLAUDE
-# Aggiunto agli agenti quando LLM è Claude (fallback)
 # ─────────────────────────────────────────────
 
 @tool("Ricerca Immobiliare Web Claude")
@@ -288,13 +215,7 @@ def ricerca_immobiliare_claude(query: str) -> str:
     """
     Cerca informazioni aggiornate sul mercato immobiliare italiano.
     Usa DuckDuckGo con fallback su Brave Search.
-    (Versione per agenti Claude — senza Google Search nativo)
-
-    Args:
-        query: La ricerca da effettuare (es. "prezzi immobili Milano Navigli 2026")
-
-    Returns:
-        Risultati di ricerca aggiornati dal web
+    Versione per agenti Claude, senza Google Search nativo.
     """
     try:
         return get_search_results(query, mode="claude")
