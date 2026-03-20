@@ -455,16 +455,25 @@ def _run_crew(
     # Cleanup markdown dall'output
     from app.utils.text_cleaner import clean_agent_output
 
+    market_text    = clean_agent_output(get_output(0))
+    property_text  = clean_agent_output(get_output(1))
+    risk_text      = clean_agent_output(get_output(2))
+    recommendation = clean_agent_output(get_output(3))
+
+    # IMPORTANTE: str(result) in CrewAI == output ultimo task == recommendation.
+    # Usarlo come "summary" causa la triplicazione nel docx.
+    # Estraiamo solo la prima riga significativa come titolo breve.
+    summary_lines = [l.strip() for l in recommendation.splitlines() if l.strip()]
+    short_summary = summary_lines[0] if summary_lines else "Analisi completata."
+
     return {
-        "summary":                   clean_agent_output(str(result)),
-        "market_overview":           clean_agent_output(get_output(0)),
-        "properties_analysis":       _parse_properties_analysis(
-                                         clean_agent_output(get_output(1)), properties
-                                     ),
-        "risks_opportunities":       clean_agent_output(get_output(2)),
-        "investment_recommendation": clean_agent_output(get_output(3)),
+        "summary":                   short_summary,
+        "market_overview":           market_text,
+        "properties_analysis":       _parse_properties_analysis(property_text, properties),
+        "risks_opportunities":       risk_text,
+        "investment_recommendation": recommendation,
         "remaining_usage":           None,
-        "llm_used":                  llm_type,   # info per il frontend/log
+        "llm_used":                  llm_type,
     }
 
 

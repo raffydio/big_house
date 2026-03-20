@@ -1,7 +1,14 @@
 # backend/app/services/calculation_service.py
 #
-# SPRINT 2 — Aggiunto fallback Claude quando Gemini fallisce.
-# Pattern identico a deep_research_service.py.
+# SPRINT 3 — Riscrittura completa.
+# Accetta N immobili (max 5) + investment_goal invece di un singolo immobile.
+# Output testo puro, nessuna tabella markdown.
+#
+# investment_goal valori:
+#   "flipping"       — vendita post-ristrutturazione entro 12-18 mesi
+#   "affitto_lungo"  — affitto residenziale a lungo termine
+#   "affitto_breve"  — affitto breve Airbnb/Booking
+#   "prima_casa"     — acquisto prima casa con valorizzazione
 
 import logging
 from typing import Optional
@@ -15,170 +22,223 @@ from app.agents.search_tool import get_search_tool
 
 logger = logging.getLogger(__name__)
 
-# ── Template few-shot (invariati) ─────────────────────────────────────────────
+# ── Template agenti ───────────────────────────────────────────────────────────
 
 _TEMPLATE_PROPERTY_VALUATOR = """
-Sei un perito immobiliare e analista di mercato specializzato in valutazioni
-per investimento. Cerchi sempre dati reali sul web con fonti citate.
+Sei un perito immobiliare esperto con 15 anni di esperienza in valutazioni
+per investimento in Italia. Cerchi sempre dati reali sul web con fonti citate.
 
-STRUTTURA ANALISI MERCATO LOCALE (per ogni immobile):
+Per ogni immobile fornito cerchi su portali locali:
+- immobiliare.it, idealista.it, casa.it, realadvisor.it
 
-Cerca su portali locali (immobiliare.it, idealista.it, casa.it, realadvisor.it):
+Per ogni immobile devi trovare:
+- Prezzo medio di vendita euro/mq nella zona specifica (non media citta)
+- Canone medio di affitto euro/mq/mese nella zona
+- Prezzi di immobili ristrutturati simili nella zona (se applicabile)
+- Costi medi di ristrutturazione da cronoshare.it per quella citta
 
-Fonte | Vendita euro/mq | Affitto euro/mq/mese | Data
-[portale 1] | [DATO] | [DATO] | [data]
-[portale 2] | [DATO] | [DATO] | [data]
-Media | [DATO] | [DATO] |
-
-Prezzo richiesto: [euro] -> [euro/mq]
-Scostamento da mercato: [+/-]% [sopra/sotto]
-Margine trattativa realistico: [%] -> obiettivo [euro]
-
-VALORE POST-RISTRUTTURAZIONE (se applicabile):
-Cerca prezzi immobili ristrutturati in zona su portali.
-Costo ristrutturazione: cerca su cronoshare.it euro/mq per [citta]
-Valore stimato post-ristr.: [euro/mq ristrutturati] * [mq] = [euro]
-Canone atteso post-ristr.: [euro/mese] (+10-15% rispetto a non ristrutturato)
-
-SCENARIO AIRBNB:
-Cerca su bnbval.com o airdna.co per la zona specifica:
-- Prezzo medio notte: [euro]
-- Tasso occupazione: [%] -> [notti]/anno
-- Ricavo lordo annuo: [notti] * [euro/notte] = [euro]
-
-REGOLA: cita URL per ogni dato. Se non trovato -> 'dato non disponibile'.
+REGOLA FONDAMENTALE: cita sempre fonte e data per ogni dato numerico.
+Se un dato non e disponibile sul web, indica "dato non disponibile" senza inventare.
+NON usare tabelle markdown. Scrivi tutto in testo chiaro con elenchi puntati.
 """
 
 _TEMPLATE_FINANCIAL_ANALYST = """
-Sei un analista finanziario specializzato in investimenti immobiliari.
-Applichi sempre le stesse formule precise per garantire confronti corretti.
+Sei un analista finanziario specializzato in investimenti immobiliari italiani.
+Applichi formule precise e confronti gli immobili in modo chiaro.
 
-FORMULA RATA MUTUO (calcola sempre):
-Rata = P * [i(1+i)^n] / [(1+i)^n - 1]
-P = capitale mutuo, i = tasso mensile (tasso annuo/12), n = mesi
-Cerca tasso attuale su mutui.it, facile.it o mutuisupermarket.it
+FORMULA RATA MUTUO (quando applicabile):
+Rata mensile = P * [i(1+i)^n] / [(1+i)^n - 1]
+dove P = capitale, i = tasso mensile (tasso annuo / 12), n = numero mesi
 
-SCENARIO A - LUNGO TERMINE SENZA RISTRUTTURAZIONE:
-Ricavo lordo annuo = canone * 12
-Cedolare secca 21% = lordo * 0,21
-Ricavo netto = lordo - tasse - spese condominiali annue
-Cash-flow mensile = (ricavo netto / 12) - rata mutuo
+Cerca il tasso mutuo fisso attuale su mutui.it o facile.it e citalo con fonte.
 
-Voce | Formula | Valore
-Ricavo lordo annuo | canone * 12 | [euro]
-Cedolare secca | lordo * 0,21 | [euro]
-Spese condominiali | [dato reale o stima] | [euro]
-Reddito netto annuo | lordo - tasse - spese | [euro]
-Rata mutuo mensile | formula sopra | [euro]
-Cash-flow mensile netto | reddito netto/12 - rata | [euro]
-Yield lordo | (lordo / prezzo) * 100 | [%]
-Yield netto cap.proprio | (netto / acconto) * 100 | [%]
-Payback | prezzo / reddito netto | [anni]
+Per ogni immobile calcoli le metriche rilevanti in base all'obiettivo.
+Usa i dati reali trovati dal Property Valuator.
 
-SCENARIO B - LUNGO TERMINE + RISTRUTTURAZIONE:
-Stesso schema con valori aggiornati post-ristrutturazione.
-Delta rendimento: yield netto B - yield netto A = [+%]
-Recupero investimento extra: costo ristr. / delta reddito annuo = [anni]
+NON usare tabelle markdown con trattini e pipe.
+Presenta i numeri come elenchi puntati per ogni immobile, ad esempio:
 
-SCENARIO C - AFFITTO BREVE AIRBNB:
-Notti occupate = 365 * [tasso occupazione]
-Ricavo lordo = notti * prezzo notte
-Costi gestione = lordo * 0,28
-Cedolare secca = (lordo - gestione) * 0,21
-Reddito netto = lordo - gestione - tasse
-Cash-flow = reddito netto/12 - rata mutuo
-
-TABELLA COMPARATIVA TRE SCENARI:
-Metrica | Sc.A Lungo | Sc.B+Ristr | Sc.C Airbnb
-Investimento totale | [euro] | [euro] | [euro]
-Cash-flow mensile | [euro] | [euro] | [euro]
-Yield lordo % | [%] | [%] | [%]
-Yield netto % | [%] | [%] | [%]
-Payback anni | [anni] | [anni] | [anni]
-Valore immobile 5y | [euro] | [euro] | [euro]
-ROI totale 5 anni % | [%] | [%] | [%]
-
-FORMULA ROI TOTALE 5 ANNI:
-= [(cash-flow annuo * 5) + (valore futuro - investimento)] / investimento * 100
-Valore futuro = prezzo * (1 + crescita YoY trovata su web)^5
+  Immobile 1 - Via Roma 10, Napoli
+  - Prezzo acquisto: 250.000 euro
+  - Costo ristrutturazione: 40.000 euro
+  - Costi accessori (notaio 2% + agenzia 3% + IMU 1%): 15.000 euro
+  - Investimento totale: 305.000 euro
+  - Prezzo rivendita stimato: 340.000 euro
+  - Margine di profitto lordo: 35.000 euro
+  - Margine %: 11.5%
+  - Score: 72/100 (breakdown: scostamento 80/100, margine 65/100, liquidita 70/100, rischio 75/100)
 """
 
-_TEMPLATE_SCENARIO_RECOMMENDER = """
-Sei un consulente senior di investimenti immobiliari. Produci sempre
-raccomandazioni con numeri precisi e motivazioni concrete.
+_TEMPLATE_COMPARATOR = """
+Sei un consulente senior di investimenti immobiliari.
+Produci raccomandazioni con numeri precisi e motivazioni concrete.
 
-STRUTTURA OUTPUT OBBLIGATORIA:
+Il tuo compito e sintetizzare le analisi in una raccomandazione finale chiara.
 
-1. TABELLA COMPARATIVA (replica da financial analyst con tutti i valori)
+STRUTTURA OUTPUT OBBLIGATORIA (testo puro, nessuna tabella markdown):
 
-2. ANALISI MUTUO:
-   Tasso fisso trovato: [%] (fonte: [URL])
-   Rata mensile: [euro]
-   Interessi totali [N] anni: [euro]
-   Fisso vs variabile: [raccomandazione con motivazione]
+1. RISPOSTA DIRETTA (2-3 frasi con i numeri chiave)
 
-3. RISCHI PER SCENARIO:
-Rischio | Sc.A | Sc.B | Sc.C | Mitigazione
-Tasso variabile | [.] | [.] | [.] | Preferire fisso
-Inquilino moroso | [.] | [.] | N/A | Fideiussione
-Normative Airbnb | N/A | N/A | [.] | Monitorare CIN
-Sforamento ristr. | N/A | [.] | [.] | Contingenza +10%
+2. CONFRONTO IMMOBILI
+   Per ogni immobile: nome, metrica principale, score, 1 pro e 1 contro.
 
-4. SCENARIO CONSIGLIATO: [A, B o C]
-   Motivazione con 3 numeri chiave.
+3. CLASSIFICA DAL MIGLIORE AL PEGGIORE
+   Con motivazione numerica per ogni posizione.
 
-5. BREAK-EVEN PRICE:
-   FORMULA: rendita netta annua / yield minimo 4% = prezzo max sostenibile
-   Calcolato: [euro]
-   Non acquistare oltre [euro] con queste condizioni di mercato.
+4. IMMOBILE CONSIGLIATO
+   Nome, strategia dettagliata, numeri chiave, orizzonte temporale.
 
-6. VERDICT FINALE:
-   COMPRA / VALUTA CON CAUTELA / EVITA
-   Scenario ottimale: [A/B/C]
-   ROI atteso: [%] a [N] anni
-   Cash-flow mensile: [+/-euro]
+5. AVVERTENZE CRITICHE (2-3 punti)
+   Solo le piu importanti da verificare prima dell'acquisto.
+
+6. VERDICT: COMPRA / VALUTA CON CAUTELA / EVITA
+   Con 3 numeri a supporto e motivazione in 2 righe.
+
+NON usare mai tabelle markdown con | e ----.
+Usa solo testo, elenchi puntati e numeri.
 """
 
+# ── Istruzioni finanziarie specifiche per obiettivo ───────────────────────────
 
-# ── Funzione principale ───────────────────────────────────────────────────────
+_GOAL_CONTEXT = {
+    "flipping": {
+        "label": "Flipping — Vendita post-ristrutturazione",
+        "horizon": "12-18 mesi",
+        "financial_instructions": """
+Per ogni immobile calcola il MARGINE DI FLIPPING:
+
+1. Costo totale acquisto = prezzo + costi accessori (notaio 2% + agenzia 3% + IMU 1%)
+2. Costo ristrutturazione = budget indicato (o stima da cronoshare.it se non indicato)
+3. Investimento totale = costo acquisto + ristrutturazione
+4. Prezzo rivendita stimato = euro/mq ristrutturati zona * superficie
+5. Margine lordo = prezzo rivendita stimato - investimento totale
+6. Margine % = (margine lordo / investimento totale) * 100
+7. ROI annualizzato = margine % / 1.5 * 100 (su base 18 mesi)
+8. Break-even price = prezzo rivendita - ristrutturazione - costi accessori
+
+Score 0-100 pesato su:
+- Scostamento prezzo acquisto da mercato (25%): piu sotto mercato = score alto
+- Margine flipping % (35%): target 20%+ = score alto
+- Liquidita zona (25%): stima dalla vivacita mercato locale
+- Rischio cantiere (15%): stato immobile e complessita ristrutturazione
+
+NON calcolare yield da affitto o cash-flow mensile per questo obiettivo.
+""",
+    },
+    "affitto_lungo": {
+        "label": "Affitto a lungo termine",
+        "horizon": "10-15 anni",
+        "financial_instructions": """
+Per ogni immobile calcola i PARAMETRI DI REDDITEZZA DA AFFITTO:
+
+1. Canone mensile stimato = euro/mq/mese zona * superficie (o canone indicato)
+2. Ricavo lordo annuo = canone * 12
+3. Cedolare secca 21% = ricavo lordo * 0.21
+4. Spese condominiali annue = dato reale o stima 600-1200 euro/anno
+5. Reddito netto annuo = lordo - cedolare - spese cond.
+6. Acconto 20% (o % indicata) = prezzo * 0.20
+7. Mutuo = prezzo - acconto
+8. Cerca tasso mutuo fisso attuale su mutui.it
+9. Rata mensile mutuo = calcola con formula esatta
+10. Cash-flow mensile netto = (reddito netto / 12) - rata mutuo
+11. Yield lordo % = (lordo / prezzo) * 100
+12. Yield netto su capitale proprio % = (netto / acconto) * 100
+13. Payback anni = prezzo / reddito netto
+
+Score 0-100 pesato su:
+- Yield lordo % (30%): target 6%+ = score alto
+- Cash-flow mensile (30%): positivo = score alto
+- Scostamento prezzo da mercato (20%)
+- Trend affitti zona (20%)
+""",
+    },
+    "affitto_breve": {
+        "label": "Affitto breve (Airbnb/Booking)",
+        "horizon": "3-5 anni",
+        "financial_instructions": """
+Per ogni immobile calcola i PARAMETRI AIRBNB:
+
+Cerca su bnbval.com o airdna.co per la zona specifica:
+1. Prezzo medio notte zona
+2. Tasso di occupazione zona %
+3. Notti occupate anno = 365 * tasso occupazione
+4. Ricavo lordo annuo = notti * prezzo notte
+5. Costi gestione = lordo * 0.28
+6. Cedolare secca = (lordo - gestione) * 0.21
+7. Reddito netto annuo = lordo - gestione - cedolare
+8. Acconto 20% + mutuo + rata mensile (formula + tasso web)
+9. Cash-flow mensile netto = (netto / 12) - rata mutuo
+10. Yield lordo % = (lordo / prezzo) * 100
+11. Yield netto su cap. proprio % = (netto / acconto) * 100
+12. Payback anni = prezzo / reddito netto
+
+Nota normativa CIN 2026: dal 3 immobile in poi scatta P.IVA obbligatoria.
+
+Score 0-100 pesato su:
+- Potenziale ricavo lordo annuo (30%)
+- Tasso occupazione zona (30%)
+- Cash-flow mensile (25%)
+- Rischio normativo e stagionalita (15%)
+""",
+    },
+    "prima_casa": {
+        "label": "Prima casa con valorizzazione",
+        "horizon": "5-10 anni",
+        "financial_instructions": """
+Per ogni immobile calcola i PARAMETRI PRIMA CASA:
+
+1. Prezzo acquisto + costi accessori (prima casa: imposta 2% invece di 9%)
+2. Acconto 10-20% + mutuo + rata mensile (formula + tasso web)
+3. Sostenibilita rata: rata / reddito medio zona (target < 30%)
+4. Crescita YoY zona trovata su portali: applica a 5 anni
+5. Valore stimato a 5 anni = prezzo * (1 + crescita YoY)^5
+6. Plusvalenza potenziale = valore 5y - prezzo acquisto
+7. Se da ristrutturare: costo totale e valore post-ristr.
+8. Risparmio affitto vs mutuo = canone zona - rata mutuo
+
+Score 0-100 pesato su:
+- Sostenibilita rata (30%): rata < 30% reddito = score alto
+- Potenziale valorizzazione % a 5 anni (30%)
+- Qualita zona e servizi (20%)
+- Stato immobile e costi immediati (20%)
+""",
+    },
+}
+
+
+# ── Funzione pubblica principale ──────────────────────────────────────────────
 
 def run_compare_roi(
-    purchase_price: float,
-    size_sqm: float,
-    location: str,
-    current_rent: Optional[float] = None,
-    target_rent: Optional[float] = None,
-    renovation_budget: Optional[float] = None,
-    mortgage_rate: Optional[float] = None,
-    mortgage_years: Optional[int] = 20,
-    down_payment_pct: Optional[float] = 30.0,
+    properties: list[dict],
+    investment_goal: str = "affitto_lungo",
     plan: str = "free",
     user_id: Optional[int] = None,
 ) -> dict:
     """
-    Calcola ROI immobiliare con tre scenari e analisi mutuo completa.
-    SPRINT 2: tenta Gemini prima, fallback automatico su Claude se necessario.
+    Calcola ROI comparativo per N immobili (max 5).
+
+    Ogni property dict puo contenere:
+        name, address, price, size_sqm, rooms, condition,
+        renovation_budget, mortgage_rate, mortgage_years,
+        down_payment_pct, current_rent, floor, elevator, notes
     """
+    if not properties:
+        raise ValueError("Almeno un immobile e richiesto.")
+    if len(properties) > 5:
+        properties = properties[:5]
+
     logger.info(
-        f"Calcola ROI START — user={user_id}, plan={plan}, "
-        f"location='{location}', price={purchase_price}"
+        f"[calcola_roi] START — user={user_id}, plan={plan}, "
+        f"goal={investment_goal}, n_properties={len(properties)}"
     )
 
     kwargs = dict(
-        purchase_price=purchase_price,
-        size_sqm=size_sqm,
-        location=location,
-        current_rent=current_rent,
-        target_rent=target_rent,
-        renovation_budget=renovation_budget,
-        mortgage_rate=mortgage_rate,
-        mortgage_years=mortgage_years,
-        down_payment_pct=down_payment_pct,
+        properties=properties,
+        investment_goal=investment_goal,
         plan=plan,
         user_id=user_id,
     )
 
-    # ── Tentativo 1: Gemini ──
     try:
         return _run_roi_crew(llm_type="gemini", **kwargs)
     except Exception as e:
@@ -190,63 +250,43 @@ def run_compare_roi(
         else:
             raise
 
-    # ── Tentativo 2: Claude fallback ──
     fallback_llm = get_fallback_llm(plan=plan)
     if fallback_llm is None:
         raise RuntimeError(
-            "Gemini non disponibile e ANTHROPIC_API_KEY non configurata. "
-            "Aggiungi ANTHROPIC_API_KEY al .env per abilitare il fallback Claude."
+            "Gemini non disponibile e ANTHROPIC_API_KEY non configurata."
         )
 
     logger.info(f"[calcola_roi] Avvio con Claude fallback — piano={plan}")
     return _run_roi_crew(llm_type="claude", forced_llm=fallback_llm, **kwargs)
 
 
+# ── Crew interno ──────────────────────────────────────────────────────────────
+
 def _run_roi_crew(
-    purchase_price: float,
-    size_sqm: float,
-    location: str,
-    current_rent: Optional[float],
-    target_rent: Optional[float],
-    renovation_budget: Optional[float],
-    mortgage_rate: Optional[float],
-    mortgage_years: int,
-    down_payment_pct: float,
+    properties: list[dict],
+    investment_goal: str,
     plan: str,
     user_id: Optional[int],
     llm_type: str,
     forced_llm=None,
 ) -> dict:
-    """Esegue il crew ROI con il provider LLM specificato."""
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
     search_tool = get_search_tool(plan=plan, mode=search_mode)
 
-    logger.info(f"[calcola_roi] crew LLM={llm_type}, search_mode={search_mode}")
-
-    down_payment    = purchase_price * (down_payment_pct / 100)
-    mortgage_amount = purchase_price - down_payment
-
-    property_summary = (
-        f"Immobile: {location}\n"
-        f"Prezzo acquisto: {purchase_price:,.0f} euro\n"
-        f"Superficie: {size_sqm} mq\n"
-        f"euro/mq: {purchase_price/size_sqm:,.0f}\n"
-        f"Acconto ({down_payment_pct}%): {down_payment:,.0f} euro\n"
-        f"Mutuo richiesto: {mortgage_amount:,.0f} euro\n"
-        f"Durata mutuo: {mortgage_years} anni\n"
-        + (f"Tasso indicativo: {mortgage_rate}%\n" if mortgage_rate else "Tasso: da cercare su web\n")
-        + (f"Budget ristrutturazione: {renovation_budget:,.0f} euro\n" if renovation_budget else "")
-        + (f"Affitto attuale: {current_rent:,.0f} euro/mese\n" if current_rent else "")
-    )
+    goal_info    = _GOAL_CONTEXT.get(investment_goal, _GOAL_CONTEXT["affitto_lungo"])
+    goal_label   = goal_info["label"]
+    goal_horizon = goal_info["horizon"]
+    goal_fin_inst = goal_info["financial_instructions"]
+    props_text   = _format_properties(properties)
 
     # ── Agenti ───────────────────────────────────────────────────────────────
     property_valuator = Agent(
         role="Property Valuator",
         goal=(
-            "Trovare prezzi reali di vendita e affitto per la zona specifica. "
-            "Valutare il prezzo richiesto rispetto al mercato. "
-            "Stimare il valore post-ristrutturazione se applicabile."
+            "Trovare prezzi reali di vendita e affitto per ogni zona. "
+            "Valutare il prezzo richiesto vs mercato locale. "
+            "Stimare valori post-ristrutturazione dove necessario."
         ),
         backstory=_TEMPLATE_PROPERTY_VALUATOR,
         llm=llm,
@@ -258,9 +298,9 @@ def _run_roi_crew(
     financial_analyst = Agent(
         role="Financial Analyst Immobiliare",
         goal=(
-            "Calcolare i tre scenari ROI con formule precise: "
-            "yield lordo/netto, cash-flow mensile, payback, ROI 5 anni. "
-            "Cercare il tasso mutuo reale attuale sul web."
+            f"Calcolare metriche finanziarie per ogni immobile "
+            f"in ottica '{goal_label}'. "
+            "Produrre numeri precisi e score 0-100 per ogni immobile."
         ),
         backstory=_TEMPLATE_FINANCIAL_ANALYST,
         llm=llm,
@@ -269,14 +309,13 @@ def _run_roi_crew(
         allow_delegation=False,
     )
 
-    scenario_recommender = Agent(
-        role="Scenario Recommender",
+    comparator = Agent(
+        role="Investment Comparator",
         goal=(
-            "Confrontare i tre scenari, identificare i rischi per ognuno, "
-            "raccomandare lo scenario ottimale con motivazione numerica "
-            "e calcolare il break-even price."
+            "Confrontare tutti gli immobili, classificarli e "
+            "raccomandare la scelta ottimale con numeri."
         ),
-        backstory=_TEMPLATE_SCENARIO_RECOMMENDER,
+        backstory=_TEMPLATE_COMPARATOR,
         llm=llm,
         verbose=True,
         allow_delegation=False,
@@ -285,78 +324,67 @@ def _run_roi_crew(
     # ── Task ─────────────────────────────────────────────────────────────────
     task_valuation = Task(
         description=(
-            f"IMMOBILE DA ANALIZZARE:\n{property_summary}\n\n"
-            f"Il tuo compito:\n"
-            f"1. Cerca prezzi vendita euro/mq per {location} su portali locali\n"
-            f"2. Cerca canoni affitto mensili per {size_sqm:.0f} mq a {location}\n"
-            f"3. Calcola scostamento del prezzo richiesto dal mercato\n"
-            f"4. Se budget ristrutturazione indicato: cerca costi euro/mq su "
-            f"   cronoshare.it per la citta e stima valore post-ristr.\n"
-            f"5. Cerca dati Airbnb per la zona su bnbval.com o airdna.co\n"
-            f"6. Cita URL e data per ogni dato trovato"
+            f"OBIETTIVO INVESTIMENTO: {goal_label} (orizzonte {goal_horizon})\n\n"
+            f"IMMOBILI DA ANALIZZARE:\n{props_text}\n\n"
+            f"Per ogni immobile:\n"
+            f"1. Cerca prezzi vendita euro/mq nella zona specifica su portali\n"
+            f"2. Cerca canoni affitto per metratura simile nella zona\n"
+            f"3. Calcola scostamento del prezzo richiesto dal mercato (%)\n"
+            f"4. Se 'da ristrutturare': cerca costi medi su cronoshare.it "
+            f"   e stima valore post-ristrutturazione\n"
+            f"5. Cita URL e data per ogni dato\n\n"
+            f"Scrivi in testo puro, nessuna tabella markdown."
         ),
         expected_output=(
-            "Prezzi mercato con fonti, scostamento%, canoni reali, "
-            "valore post-ristrutturazione stimato, dati Airbnb zona."
+            "Per ogni immobile: prezzi mercato con fonti, scostamento %, "
+            "canoni reali, valore post-ristr. se applicabile. Testo puro."
         ),
         agent=property_valuator,
     )
 
-    task_scenarios = Task(
+    task_financials = Task(
         description=(
-            f"Usando i dati di mercato trovati, calcola i tre scenari:\n\n"
-            f"DATI IMMOBILE:\n{property_summary}\n\n"
-            f"SCENARIO A - Lungo termine senza ristrutturazione:\n"
-            f"- Cerca tasso mutuo fisso {mortgage_years}y su mutui.it o facile.it\n"
-            f"- Calcola rata mensile con formula esatta\n"
-            f"- Usa canone trovato per zona, applica tutte le formule\n"
-            f"- Calcola cash-flow mensile netto\n\n"
-            f"SCENARIO B - Lungo termine con ristrutturazione:\n"
-            f"- Budget: {renovation_budget:,.0f} euro (se non indicato cerca costo medio)\n"
-            f"- Usa canone post-ristrutturazione (+10-15%)\n"
-            f"- Ricalcola tutti i parametri\n\n"
-            f"SCENARIO C - Affitto breve Airbnb:\n"
-            f"- Usa dati notti/occupazione trovati per la zona\n"
-            f"- Applica costi gestione 28% e cedolare 21%\n\n"
-            f"Per tutti: yield lordo%, yield netto%, cash-flow mensile, "
-            f"payback, valore a 5 anni, ROI totale 5 anni.\n"
-            f"Produci tabella comparativa dei tre scenari."
+            f"Calcola le metriche finanziarie per ogni immobile.\n\n"
+            f"OBIETTIVO: {goal_label}\n\n"
+            f"IMMOBILI:\n{props_text}\n\n"
+            f"ISTRUZIONI DI CALCOLO:\n{goal_fin_inst}\n\n"
+            f"Per ogni immobile: tutti i calcoli richiesti + score 0-100.\n"
+            f"Formato: elenchi puntati per immobile. Nessuna tabella markdown."
         ),
         expected_output=(
-            "Tasso mutuo trovato con fonte, rata calcolata, "
-            "tabella tre scenari con tutte le metriche, "
-            "calcolo ROI totale 5 anni per ogni scenario."
+            "Per ogni immobile: calcoli finanziari completi per l'obiettivo, "
+            "score 0-100 con breakdown. Testo puro con elenchi."
         ),
         agent=financial_analyst,
         context=[task_valuation],
     )
 
-    task_recommendation = Task(
+    task_comparison = Task(
         description=(
-            f"Confronta i tre scenari e produci la raccomandazione finale.\n\n"
-            f"DATI IMMOBILE:\n{property_summary}\n\n"
-            f"Produci OBBLIGATORIAMENTE:\n"
-            f"1. Tabella comparativa completa dei tre scenari\n"
-            f"2. Analisi mutuo: fisso vs variabile con raccomandazione\n"
-            f"3. Tabella rischi per scenario\n"
-            f"4. Scenario consigliato con 3 numeri chiave a supporto\n"
-            f"5. Break-even price: rendita netta / 4% = prezzo max sostenibile\n"
-            f"6. Verdict: COMPRA / VALUTA CON CAUTELA / EVITA\n"
-            f"   con scenario ottimale, ROI atteso e cash-flow mensile"
+            f"Sintetizza e produci la raccomandazione finale.\n\n"
+            f"OBIETTIVO: {goal_label} (orizzonte {goal_horizon})\n\n"
+            f"IMMOBILI:\n{props_text}\n\n"
+            f"Produci in testo puro:\n"
+            f"1. Risposta diretta (2-3 frasi con numeri)\n"
+            f"2. Confronto immobili (nome, metrica, score, pro, contro)\n"
+            f"3. Classifica motivata numericamente\n"
+            f"4. Immobile consigliato con strategia e numeri\n"
+            f"5. 2-3 avvertenze critiche\n"
+            f"6. VERDICT: COMPRA / VALUTA CON CAUTELA / EVITA + 3 numeri\n\n"
+            f"VIETATO: tabelle markdown con | e ----."
         ),
         expected_output=(
-            "Tabella comparativa, analisi mutuo, rischi per scenario, "
-            "scenario consigliato con motivazione, break-even price, "
-            "verdict finale con numeri."
+            "Testo puro: risposta diretta, confronto, classifica, "
+            "consiglio con numeri, avvertenze, verdict."
         ),
-        agent=scenario_recommender,
-        context=[task_valuation, task_scenarios],
+        agent=comparator,
+        context=[task_valuation, task_financials],
     )
 
     # ── Esecuzione ────────────────────────────────────────────────────────────
     crew = Crew(
-        agents=[property_valuator, financial_analyst, scenario_recommender],
-        tasks=[task_valuation, task_scenarios, task_recommendation],
+        agents=[property_valuator, financial_analyst, comparator],
+        tasks=[task_valuation, task_financials, task_comparison],
         process=Process.sequential,
         verbose=True,
     )
@@ -375,29 +403,76 @@ def _run_roi_crew(
 
     from app.utils.text_cleaner import clean_agent_output
 
-    scenarios_text = clean_agent_output(get_output(1))
-    scenarios = _parse_scenarios(scenarios_text)
+    market_analysis = clean_agent_output(get_output(0))
+    financials_raw  = clean_agent_output(get_output(1))
+    recommendation  = clean_agent_output(get_output(2))
+
+    summary_lines = [l.strip() for l in recommendation.splitlines() if l.strip()]
+    short_summary = summary_lines[0] if summary_lines else "Analisi completata."
 
     return {
-        "property_summary":      property_summary,
-        "market_analysis":       clean_agent_output(get_output(0)),
-        "scenarios":             scenarios,
-        "scenarios_raw":         scenarios_text,
-        "recommended_scenario":  clean_agent_output(get_output(2)),
+        "summary":               short_summary,
+        "investment_goal":       investment_goal,
+        "investment_goal_label": goal_label,
+        "properties_count":      len(properties),
+        "market_analysis":       market_analysis,
+        "financial_analysis":    financials_raw,
+        "recommended_scenario":  recommendation,
+        # Campo legacy per compatibilita frontend
+        "scenarios":             _build_scenarios_compat(properties, financials_raw),
+        "scenarios_raw":         financials_raw,
         "remaining_usage":       None,
         "llm_used":              llm_type,
     }
 
 
-def _parse_scenarios(raw_text: str) -> list[dict]:
-    base = {
-        "description": raw_text,
-        "roi_percent": 0,
-        "payback_years": 0,
-        "risk_level": "medio",
-    }
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+def _format_properties(properties: list[dict]) -> str:
+    parts = []
+    for i, p in enumerate(properties, 1):
+        lines = [f"Immobile {i}: {p.get('name', '')}"]
+        if p.get("address"):
+            lines.append(f"  Indirizzo:            {p['address']}")
+        if p.get("price"):
+            lines.append(f"  Prezzo richiesto:     {p['price']:,.0f} euro")
+        if p.get("size_sqm"):
+            lines.append(f"  Superficie:           {p['size_sqm']} mq")
+        if p.get("price") and p.get("size_sqm"):
+            lines.append(f"  euro/mq:              {p['price'] / p['size_sqm']:,.0f}")
+        if p.get("rooms"):
+            lines.append(f"  Locali:               {p['rooms']}")
+        if p.get("condition"):
+            lines.append(f"  Condizioni:           {p['condition']}")
+        if p.get("floor"):
+            lines.append(f"  Piano:                {p['floor']}")
+        if p.get("elevator") is not None:
+            lines.append(f"  Ascensore:            {'Si' if p['elevator'] else 'No'}")
+        if p.get("renovation_budget"):
+            lines.append(f"  Budget ristrutturaz.: {p['renovation_budget']:,.0f} euro")
+        if p.get("mortgage_rate"):
+            lines.append(f"  Tasso mutuo indicat.: {p['mortgage_rate']}%")
+        if p.get("mortgage_years"):
+            lines.append(f"  Durata mutuo:         {p['mortgage_years']} anni")
+        if p.get("down_payment_pct"):
+            lines.append(f"  Acconto:              {p['down_payment_pct']}%")
+        if p.get("current_rent"):
+            lines.append(f"  Affitto attuale:      {p['current_rent']:,.0f} euro/mese")
+        if p.get("notes"):
+            lines.append(f"  Note:                 {p['notes']}")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _build_scenarios_compat(properties: list[dict], financials_raw: str) -> list[dict]:
+    """Compatibilita con il frontend che si aspetta una lista 'scenarios'."""
     return [
-        {**base, "name": "Scenario A - Lungo termine"},
-        {**base, "name": "Scenario B - Lungo termine + Ristrutturazione"},
-        {**base, "name": "Scenario C - Affitto breve (Airbnb)"},
+        {
+            "name": p.get("name") or p.get("address") or f"Immobile {i+1}",
+            "description": financials_raw,
+            "roi_percent": 0,
+            "payback_years": 0,
+            "risk_level": "medio",
+        }
+        for i, p in enumerate(properties)
     ]
