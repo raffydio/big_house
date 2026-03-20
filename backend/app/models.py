@@ -1,10 +1,16 @@
 """
-models.py — limiti piani aggiornati
-PRO: 10 DR + 10 Calc  (era 20+20)
-PLUS: 20 DR + 50 Calc (era 20+100)
+models.py — Big House AI
+
+limiti piani aggiornati:
+  PRO:  10 DR + 10 Calc  (era 20+20)
+  PLUS: 20 DR + 50 Calc  (era 20+100)
+
+SPRINT 3:
+  - DeepResearchRequest: aggiunto campo `language` (ISO 639-1)
+  - CompareROIRequest:   aggiunto campo `language`; campo `goal` era già presente
 """
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from enum import Enum
 
@@ -84,13 +90,7 @@ class BillingStatus(BaseModel):
 
 
 # ─────────────────────────────────────────
-# Limiti per piano — AGGIORNATI
-#
-# Logica economica (Gemini 2.5 Flash-Lite + Tavily):
-#   FREE:  costo ~$0/mese   → acquisition funnel
-#   BASIC: costo ~$0.50/mese → margine 90%+ su €4.99
-#   PRO:   costo max $21/mese → margine positivo anche al 100%
-#   PLUS:  costo max $40/mese → margine 43%+ anche al 100%
+# Limiti per piano
 # ─────────────────────────────────────────
 PLAN_LIMITS = {
     Plan.FREE: {
@@ -106,14 +106,14 @@ PLAN_LIMITS = {
         "export_docx":        True,
     },
     Plan.PRO: {
-        "deepresearch_daily": 10,   # ← era 20
-        "calcola_daily":      10,   # ← era 20
+        "deepresearch_daily": 10,
+        "calcola_daily":      10,
         "storage_gb":         2,
         "export_docx":        True,
     },
     Plan.PLUS: {
-        "deepresearch_daily": 20,   # invariato
-        "calcola_daily":      50,   # ← era 100
+        "deepresearch_daily": 20,
+        "calcola_daily":      50,
         "storage_gb":         10,
         "export_docx":        True,
     },
@@ -128,6 +128,16 @@ class DeepResearchRequest(BaseModel):
     query: str = Field(
         ..., min_length=10, max_length=2000,
         description="Descrizione libera: zona, budget, obiettivo, preferenze",
+    )
+    # SPRINT 3 — lingua risposta agenti
+    language: str = Field(
+        default="it",
+        description=(
+            "Codice ISO 639-1 della lingua in cui rispondere "
+            "(es. 'it', 'en', 'es', 'fr', 'de'). Default 'it'."
+        ),
+        min_length=2,
+        max_length=5,
     )
 
 
@@ -179,6 +189,16 @@ class PropertyInput(BaseModel):
 class CompareROIRequest(BaseModel):
     properties: List[PropertyInput] = Field(..., min_length=1, max_length=5)
     goal: str = Field(default="flipping")
+    # SPRINT 3 — lingua risposta agenti
+    language: str = Field(
+        default="it",
+        description=(
+            "Codice ISO 639-1 della lingua in cui rispondere "
+            "(es. 'it', 'en', 'es', 'fr', 'de'). Default 'it'."
+        ),
+        min_length=2,
+        max_length=5,
+    )
 
 
 class RenovationScenario(BaseModel):

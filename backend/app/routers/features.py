@@ -62,6 +62,7 @@ async def deep_research(
             properties=[],
             plan=plan,
             user_id=current_user.get("id"),
+            language=getattr(payload, "language", "it"),
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -146,13 +147,19 @@ async def calculate_roi(
             "notes":            p.get("notes") or p.get("note", ""),
         })
 
-    # ── Risolvi investment_goal ───────────────────────────────────────────────
-    raw_goal = getattr(payload, "investment_goal", None) or "affitto_lungo"
+    # ── Risolvi goal (campo unificato — legacy: investment_goal) ─────────────
+    # CompareROIRequest usa "goal"; versioni precedenti mandavano "investment_goal"
+    raw_goal = (
+        getattr(payload, "goal", None)
+        or getattr(payload, "investment_goal", None)
+        or "affitto_lungo"
+    )
     investment_goal = GOAL_MAP.get(raw_goal, "affitto_lungo")
 
     logger.info(
         f"Calcola ROI | user={current_user['email']} | plan={plan} | "
-        f"goal={investment_goal} | immobili={len(normalized)}"
+        f"goal={investment_goal} | lang={getattr(payload, 'language', 'it')} | "
+        f"immobili={len(normalized)}"
     )
 
     # ── Chiama il service con la nuova firma ──────────────────────────────────
@@ -163,6 +170,7 @@ async def calculate_roi(
             investment_goal=investment_goal,
             plan=plan,
             user_id=current_user.get("id"),
+            language=getattr(payload, "language", "it"),
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))

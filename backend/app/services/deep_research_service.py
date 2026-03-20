@@ -19,132 +19,126 @@ logger = logging.getLogger(__name__)
 # ── Template few-shot (invariati dallo Sprint 1) ──────────────────────────────
 
 _TEMPLATE_MARKET_SCOUT = """
-Sei un esperto analista di mercato immobiliare con 15 anni di esperienza.
-Conosci OMI, Immobiliare.it, Idealista, Tecnocasa, Nomisma e i principali
-portali internazionali. Cerchi SEMPRE dati reali sul web e non inventi mai
-prezzi o statistiche.
+You are an expert real estate market analyst with 15 years of global experience.
+You ALWAYS search for real data on the web and NEVER invent prices or statistics.
 
-PORTALI PER PAESE:
-- Italia: immobiliare.it, idealista.it, casa.it, realadvisor.it
-- Spagna: idealista.com, fotocasa.es
-- Portogallo: idealista.pt, imovirtual.com
-- Francia: seloger.com, leboncoin.fr
-- Germania: immoscout24.de, immowelt.de
-- UK: rightmove.co.uk, zoopla.co.uk
-- USA: zillow.com, realtor.com
-- UAE: propertyfinder.ae, bayut.com
+PORTAL SELECTION RULES:
+- Identify the country from the property address or query.
+- Use the leading real estate portals for that country.
+  Examples: Zillow/Realtor (USA), Rightmove/Zoopla (UK), Idealista (ES/IT/PT),
+  SeLoger/LeBonCoin (FR), ImmobilienScout24 (DE), Domain/REA (AU),
+  PropertyFinder/Bayut (UAE/MENA), 99.co (SG), and equivalents worldwide.
+- If the country is unclear, search for "[city] real estate market data [year]".
 
-STRUTTURA OUTPUT OBBLIGATORIA per ogni citta/zona analizzata:
+MANDATORY OUTPUT STRUCTURE for each city/area:
 
-Indicatore | Valore | Fonte
-Prezzo medio vendita | [DATO] euro/mq | [fonte + data]
-Prezzo medio affitto | [DATO] euro/mq/mese | [fonte + data]
-Variazione YoY | [DATO] % | [fonte + data]
-Rendimento lordo | ([affitto]*12)/[vendita]*100 = [DATO] %
-Trend | CRESCITA/STABILE/CALO | [motivazione]
+Indicator | Value | Source
+Average sale price | [VALUE] [currency]/sqm | [source + date]
+Average rental price | [VALUE] [currency]/sqm/month | [source + date]
+YoY change | [VALUE] % | [source + date]
+Gross yield | (rent*12)/sale*100 = [VALUE] %
+Trend | GROWING/STABLE/DECLINING | [reason]
 
-Quartieri piu costosi (minimo 2): [nome]: [DATO] euro/mq - [motivazione]
-Quartieri piu economici (minimo 2): [nome]: [DATO] euro/mq - [motivazione]
+Most expensive neighborhoods (min 2): [name]: [VALUE] [currency]/sqm - [reason]
+Most affordable neighborhoods (min 2): [name]: [VALUE] [currency]/sqm - [reason]
 
-REGOLA CRITICA: cerca SEMPRE il micro-mercato specifico (zona/quartiere),
-non la media della citta. Cita URL e data per ogni dato numerico.
-Se un dato non e disponibile scrivi 'dato non disponibile'.
+CRITICAL RULE: ALWAYS search the specific micro-market (neighborhood/district),
+not the city average. Cite URL and date for every numeric data point.
+Use local currency. Write 'data not available' if a value cannot be found.
 """
 
 _TEMPLATE_PROPERTY_ANALYST = """
-Sei un perito immobiliare certificato con esperienza in valutazioni
-per investimento. Usi solo dati documentati e formule precise.
+You are a certified property appraiser with global investment valuation experience.
+You use only documented data and precise formulas.
 
-FORMULE UNIVERSALI DA APPLICARE SEMPRE:
+UNIVERSAL FORMULAS (always apply):
 
-YIELD LORDO = (affitto mensile * 12) / prezzo acquisto * 100
-YIELD NETTO = (affitto annuo * 0,79 - spese condominiali annue) / prezzo acquisto * 100
-PAYBACK = prezzo acquisto / reddito netto annuo
+GROSS YIELD = (monthly rent * 12) / purchase price * 100
+NET YIELD = (annual rent * (1 - local_tax_rate) - annual service charges) / purchase price * 100
+PAYBACK = purchase price / net annual income
 
-CANONE CONCORDATO: se zona alta tensione abitativa -> cedolare 10% invece di 21%
+SHORT-TERM RENTAL YIELD = (avg nightly rate * occupied nights * (1 - mgmt_fee_pct) - platform fees) / price * 100
+Management costs = typically 25-30% of gross revenue.
+Search occupancy rates on AirDNA, BnbVal, or local STR analytics platforms.
 
-YIELD AIRBNB = (prezzo notte * notti occupate * 0,79 - costi gestione) / prezzo * 100
-Costi gestione Airbnb = 28% del ricavo lordo
-Cerca tasso occupazione su bnbval.com o airdna.co per la zona specifica.
+INVESTMENT SCORE 0-100 = weighted average:
+- Net yield (weight 30%)
+- Price deviation from market (weight 25%)
+- Zone liquidity (weight 20%)
+- Flipping or appreciation potential (weight 25%)
 
-SCORE INVESTIMENTO 0-100 = media ponderata:
-- Yield netto (peso 30%)
-- Scostamento prezzo da mercato (peso 25%)
-- Liquidita zona (peso 20%)
-- Potenziale flipping o rivalutazione (peso 25%)
-
-STRUTTURA OUTPUT per ogni immobile:
-Prezzo richiesto: [euro] -> [euro/mq]
-Prezzo medio zona: [euro/mq] (fonte: [URL])
-Scostamento: [+/-]% [sopra/sotto] mercato
-Canone mensile stimato: [euro] (fonte: [URL])
-Yield lordo: [%] | Yield netto: [%] | Payback: [anni]
-Score investimento: [0-100] - [motivazione con pesi]
-Strategia consigliata: buy-to-let lungo / buy-to-let breve / flipping / evita
+OUTPUT STRUCTURE per property:
+Asking price: [VALUE] [currency] -> [VALUE] [currency]/sqm
+Zone avg price: [VALUE] [currency]/sqm (source: [URL])
+Deviation: [+/-]% [above/below] market
+Estimated monthly rent: [VALUE] [currency] (source: [URL])
+Gross yield: [%] | Net yield: [%] | Payback: [years]
+Investment score: [0-100] - [breakdown by weight]
+Recommended strategy: long-term rental / short-term rental / flipping / avoid
 """
 
 _TEMPLATE_RISK_ASSESSOR = """
-Sei uno specialista in due diligence immobiliare e analisi di rischio.
-Valuti ogni fattore con evidenze concrete trovate sul web.
+You are a real estate due diligence and risk analysis specialist.
+You assess every factor with concrete evidence found on the web.
 
-CHECKLIST RISCHI DA VALUTARE (livello ALTO/MEDIO/BASSO):
+RISK CHECKLIST (rate each: HIGH/MEDIUM/LOW):
 
-Per BUY-TO-LET:
-- Inquilino moroso: cerca dati sfratti/1000 contratti per la citta
-- Normative affitti brevi: cerca aggiornamenti CIN e limiti giorni 2026
-- Deprezzamento: YoY prezzi zona
-- Costi manutenzione: stima 1% valore immobile/anno
+For BUY-TO-LET:
+- Tenant default risk: search eviction rates and vacancy rates for the city/market
+- Short-term rental regulations: search current STR rules, licensing, and night limits for the location
+- Depreciation risk: YoY price trend in the specific zone
+- Maintenance costs: estimate 1-1.5% of property value/year
 
-Per FLIPPING:
-- Rischio mercato: previsioni prezzi zona 2026-2027
-- Rischio cantiere: sforamento medio 10-15% del budget ristrutturazione
-- Rischio liquidita: tempo medio vendita ristrutturati in zona
-- Vincoli urbanistici: piano regolatore, delibere condominiali
+For FLIPPING:
+- Market risk: price forecasts for the zone in the next 12-24 months
+- Construction risk: typical renovation budget overrun (usually 10-15%)
+- Liquidity risk: average time-on-market for renovated properties in the zone
+- Planning/zoning risk: local urban planning rules, permit requirements
 
-TEMPLATE RISCHI:
-Rischio | Evidenza trovata sul web | Livello | Mitigazione
+RISK OUTPUT TEMPLATE:
+Risk | Evidence found on web | Level (H/M/L) | Mitigation
 
-TEMPLATE OPPORTUNITA:
-Opportunita | Evidenza | Impatto stimato
+OPPORTUNITY OUTPUT TEMPLATE:
+Opportunity | Evidence | Estimated impact
 
-Cerca sempre: piani di riqualificazione urbana, nuove infrastrutture metro,
-sviluppi residenziali, agevolazioni fiscali specifiche per la zona.
+Always search: urban renewal plans, new infrastructure, residential developments,
+tax incentives or grants specific to the location and property type.
 """
 
 _TEMPLATE_INVESTMENT_STRATEGIST = """
-Sei un consulente d'investimento immobiliare senior. Le tue raccomandazioni
-includono sempre numeri precisi, orizzonte temporale e strategia di uscita.
+You are a senior real estate investment advisor. Your recommendations
+always include precise numbers, time horizon, and exit strategy.
 
-STRUTTURA OUTPUT OBBLIGATORIA:
+MANDATORY OUTPUT STRUCTURE:
 
-1. RISPOSTA DIRETTA alla query (1-2 frasi con numeri)
+1. DIRECT ANSWER to the query (1-2 sentences with numbers)
 
-2. TABELLA COMPARATIVA (se piu immobili):
-Metrica | Imm.A | Imm.B | Imm.C
-Prezzo (euro) | [DATO] | [DATO] | [DATO]
-euro/mq | [DATO] | [DATO] | [DATO]
-Scostamento mercato (%) | [DATO] | [DATO] | [DATO]
-Yield lordo (%) | [DATO] | [DATO] | [DATO]
-Yield netto (%) | [DATO] | [DATO] | [DATO]
-Payback (anni) | [DATO] | [DATO] | [DATO]
-Score 0-100 | [DATO] | [DATO] | [DATO]
-Strategia consigliata | [txt] | [txt] | [txt]
+2. COMPARISON TABLE (if multiple properties):
+Metric | Prop.A | Prop.B | Prop.C
+Price ([currency]) | [VALUE] | [VALUE] | [VALUE]
+[currency]/sqm | [VALUE] | [VALUE] | [VALUE]
+Market deviation (%) | [VALUE] | [VALUE] | [VALUE]
+Gross yield (%) | [VALUE] | [VALUE] | [VALUE]
+Net yield (%) | [VALUE] | [VALUE] | [VALUE]
+Payback (years) | [VALUE] | [VALUE] | [VALUE]
+Score 0-100 | [VALUE] | [VALUE] | [VALUE]
+Recommended strategy | [text] | [text] | [text]
 
-3. CLASSIFICA (dal migliore al peggiore con motivazione numerica)
+3. RANKING (best to worst with numerical justification)
 
-4. STRATEGIA per il migliore:
-- Orizzonte temporale: [anni]
-- Rendimento atteso: [%] annuo
-- Exit strategy: [rivendita/affitto/altro]
-- Prezzo massimo acquisto (break-even): [euro]
+4. STRATEGY for the top pick:
+- Time horizon: [years]
+- Expected return: [%] per year
+- Exit strategy: [resale/rental/other]
+- Maximum purchase price (break-even): [VALUE] [currency]
 
-5. AVVERTENZE (2-3 punti critici da verificare prima dell'acquisto)
+5. WARNINGS (2-3 critical points to verify before purchase)
 
-6. VERDICT FINALE:
-COMPRA / VALUTA CON CAUTELA / EVITA
-con motivazione in 3 righe e numeri.
+6. FINAL VERDICT:
+BUY / EVALUATE WITH CAUTION / AVOID
+with justification in 3 lines and supporting numbers.
 
-REGOLA: il verdict deve sempre includere numeri.
+RULE: the verdict must always include numbers.
 """
 
 
@@ -155,14 +149,17 @@ def run_deep_research(
     properties: list[dict],
     plan: str = "free",
     user_id: Optional[int] = None,
+    language: str = "it",
 ) -> dict:
     """
     Deep Research immobiliare con 4 agenti specializzati.
     SPRINT 2: tenta Gemini prima, fallback automatico su Claude se necessario.
+    language: codice ISO 639-1 della lingua dell'utente (es. 'en', 'es', 'fr').
+              Gli agenti risponderanno nella stessa lingua della query.
     """
     logger.info(
         f"Deep Research START — user={user_id}, plan={plan}, "
-        f"properties={len(properties)}, query='{query[:60]}'"
+        f"lang={language}, properties={len(properties)}, query='{query[:60]}'"
     )
 
     # ── Tentativo 1: Gemini ──
@@ -173,6 +170,7 @@ def run_deep_research(
             plan=plan,
             user_id=user_id,
             llm_type="gemini",
+            language=language,
         )
     except Exception as e:
         if should_fallback(e):
@@ -181,7 +179,6 @@ def run_deep_research(
                 f"passo a Claude. Errore: {str(e)[:120]}"
             )
         else:
-            # Errore non recuperabile (es. bug nel codice) — propaga
             raise
 
     # ── Tentativo 2: Claude fallback ──
@@ -200,6 +197,29 @@ def run_deep_research(
         user_id=user_id,
         llm_type="claude",
         forced_llm=fallback_llm,
+        language=language,
+    )
+
+
+def _build_language_instruction(language: str) -> str:
+    """
+    Restituisce l'istruzione lingua da iniettare in testa a ogni task.
+    Supporta tutti i codici ISO 639-1 — il modello gestisce la traduzione.
+    """
+    lang_names = {
+        "it": "Italian",  "en": "English",   "fr": "French",
+        "de": "German",   "es": "Spanish",   "pt": "Portuguese",
+        "nl": "Dutch",    "pl": "Polish",    "ru": "Russian",
+        "zh": "Chinese",  "ja": "Japanese",  "ar": "Arabic",
+    }
+    lang_name = lang_names.get(language, "English")
+    return (
+        f"CRITICAL LANGUAGE RULE: You MUST respond EXCLUSIVELY in {lang_name} "
+        f"(language code: {language}). "
+        f"Every single word of your response must be in {lang_name}. "
+        f"Do NOT use any other language regardless of what language "
+        f"your instructions are written in. "
+        f"The user's query is in {lang_name} — match that language exactly.\n\n"
     )
 
 
@@ -210,18 +230,21 @@ def _run_crew(
     user_id: Optional[int],
     llm_type: str,
     forced_llm=None,
+    language: str = "it",
 ) -> dict:
     """
     Esegue il crew CrewAI con il provider LLM specificato.
     llm_type: "gemini" | "claude"
     forced_llm: se fornito, usa questo LLM invece di chiamare get_llm()
+    language: codice ISO della lingua in cui rispondere
     """
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
     search_tool = get_search_tool(plan=plan, mode=search_mode)
     props_text  = _format_properties(properties)
+    lang_instr  = _build_language_instruction(language)
 
-    logger.info(f"[deep_research] crew LLM={llm_type}, search_mode={search_mode}")
+    logger.info(f"[deep_research] crew LLM={llm_type}, search_mode={search_mode}, lang={language}")
 
     # ── Agenti ───────────────────────────────────────────────────────────────
     market_scout = Agent(
@@ -286,105 +309,109 @@ def _run_crew(
 
     if has_properties:
         props_context_market = (
-            f"PROPRIETA DA ANALIZZARE:\n{props_text}\n\n"
-            "Per ogni proprieta:\n"
-            "1. Cerca il micro-mercato SPECIFICO della zona (non la media citta)\n"
-            "2. Trova prezzi vendita euro/mq per quella zona su portali locali\n"
-            "3. Trova canoni affitto euro/mq/mese per quella zona\n"
-            "4. Trova variazione YoY prezzi e trend attuale\n"
-            "5. Identifica i quartieri piu costosi e piu economici\n"
-            "6. Cita URL e data per ogni dato - mai inventare numeri"
+            f"PROPERTIES TO ANALYZE:\n{props_text}\n\n"
+            "For each property:\n"
+            "1. Search the SPECIFIC micro-market of the area (not the city average)\n"
+            "2. Find sale prices in local currency/sqm from local portals\n"
+            "3. Find rental rates in local currency/sqm/month\n"
+            "4. Find YoY price change and current trend\n"
+            "5. Identify most expensive and most affordable neighborhoods\n"
+            "6. Cite URL and date for every data point — never invent numbers"
         )
         props_context_property = (
-            f"PROPRIETA DA VALUTARE:\n{props_text}\n\n"
-            "Per ogni immobile applica le formule esatte:\n"
-            "1. Calcola euro/mq e scostamento dal mercato locale (%)\n"
-            "2. Trova canone mensile reale per quella zona e tipologia\n"
-            "3. Calcola yield lordo, yield netto (*0,79 - spese cond.), payback\n"
-            "4. Se da ristrutturare: calcola margine flipping con formula\n"
-            "   (notaio 2% + agenzia 3% + IMU 1% + costo ristr. da cronoshare.it)\n"
-            "5. Assegna score 0-100 con media ponderata dei 4 fattori\n"
-            "6. Indica strategia: buy-to-let lungo/breve/flipping/evita"
+            f"PROPERTIES TO VALUE:\n{props_text}\n\n"
+            "For each property apply exact formulas:\n"
+            "1. Calculate local-currency/sqm and deviation from local market (%)\n"
+            "2. Find the real monthly rental for that zone and property type\n"
+            "3. Calculate gross yield, net yield (apply local rental tax rate), payback\n"
+            "4. If renovation needed: calculate flipping margin\n"
+            "   (typical transaction costs: taxes + agency + notary — use local rates\n"
+            "    or estimate 5-10% if unknown; renovation budget if provided)\n"
+            "5. Assign score 0-100 using the weighted average of 4 factors\n"
+            "6. Recommend strategy: long-term rental / short-term rental / flipping / avoid"
         )
         props_context_risk = (
-            f"PROPRIETA DA ANALIZZARE:\n{props_text}\n\n"
-            "Per ogni zona cerca:\n"
-            "1. Dati sfratti/morosita per la citta\n"
-            "2. Aggiornamenti normative affitti brevi 2026 (CIN, limiti)\n"
-            "3. Previsioni prezzi zona 2026-2027\n"
-            "4. Piani riqualificazione urbana o nuove infrastrutture\n"
-            "5. Per immobili da ristrutturare: calcola break-even price\n"
-            "   (valore rivendita - costi fissi = prezzo max acquisto)\n"
-            "Valuta ogni rischio: ALTO/MEDIO/BASSO con evidenza."
+            f"PROPERTIES TO ANALYZE:\n{props_text}\n\n"
+            "For each zone search:\n"
+            "1. Eviction / vacancy data for the city or region\n"
+            "2. Current short-term rental regulations for the location (permits, night caps)\n"
+            "3. Price forecasts for the zone in the next 12-24 months\n"
+            "4. Urban renewal plans or new infrastructure projects\n"
+            "5. For renovation properties: calculate break-even price\n"
+            "   (estimated resale value - total costs = max sustainable purchase price)\n"
+            "Rate every risk: HIGH/MEDIUM/LOW with evidence."
         )
     else:
-        # Modalità simulazione: nessun immobile fornito dall'utente.
-        # Il Market Scout identifica le zone, poi il Property Analyst
-        # costruisce 3 profili tipici compatibili con la query e li analizza.
+        # Simulation mode: no specific properties provided by the user.
+        # Market Scout identifies the best zones, then Property Analyst
+        # builds 3 typical profiles compatible with the query and analyzes them.
         props_context_market = (
-            "L'investitore NON ha fornito immobili specifici.\n"
-            "Il tuo compito e analizzare il mercato della zona/citta indicata nella query "
-            "e identificare le MIGLIORI AREE dove trovare opportunita compatibili "
-            "con i criteri dell'investitore.\n\n"
-            "Per ogni area/quartiere trovato:\n"
-            "1. Cerca prezzi di vendita euro/mq su portali locali (immobiliare.it, idealista.it)\n"
-            "2. Cerca canoni affitto euro/mq/mese\n"
-            "3. Cerca variazione YoY e trend\n"
-            "4. Identifica quali zone rientrano nel budget indicato nella query\n"
-            "5. Cita URL e data per ogni dato - mai inventare numeri\n\n"
-            "IMPORTANTE: alla fine elenca le TOP 3 zone/comuni piu promettenti "
-            "con i prezzi medi di vendita e affitto trovati."
+            "The investor has NOT provided specific properties.\n"
+            "Your task is to analyze the market of the city/zone indicated in the query "
+            "and identify the BEST AREAS where opportunities matching "
+            "the investor's criteria can be found.\n\n"
+            "For each area/neighborhood found:\n"
+            "1. Search sale prices in local currency/sqm from leading local portals\n"
+            "2. Search rental rates in local currency/sqm/month\n"
+            "3. Search YoY change and market trend\n"
+            "4. Identify which zones fall within the budget mentioned in the query\n"
+            "5. Cite URL and date for every data point — never invent numbers\n\n"
+            "IMPORTANT: conclude by listing the TOP 3 most promising zones/areas "
+            "with average sale and rental prices found."
         )
         props_context_property = (
-            "L'investitore NON ha fornito immobili specifici.\n"
-            "Basandoti sui dati di mercato trovati dal Market Scout, "
-            "COSTRUISCI e ANALIZZA 3 profili di immobile tipico compatibili "
-            "con la query dell'investitore. Dai a ciascuno un nome (es. Profilo A, B, C).\n\n"
-            f"QUERY INVESTITORE: {query}\n\n"
-            "Per OGNI profilo costruito applica le formule esatte:\n"
-            "1. Definisci: zona, prezzo acquisto, superficie, condizioni\n"
-            "2. Calcola euro/mq e scostamento dal mercato locale (%)\n"
-            "3. Calcola yield lordo, yield netto (*0,79 - spese cond.), payback\n"
-            "4. Se da ristrutturare: stima costo ristr. da cronoshare.it e calcola\n"
-            "   margine flipping (notaio 2% + agenzia 3% + IMU 1% + costo ristr.)\n"
-            "5. Assegna score 0-100 con media ponderata dei 4 fattori\n"
-            "6. Indica strategia: buy-to-let lungo/breve/flipping/evita\n\n"
-            "REGOLA: usa SOLO prezzi e dati reali trovati dal Market Scout. "
-            "Non inventare valori. Se mancano dati di affitto per una zona, "
-            "usa i dati della citta piu vicina con mercato simile."
+            "The investor has NOT provided specific properties.\n"
+            "Based on the market data found by the Market Scout, "
+            "BUILD and ANALYZE 3 typical property profiles compatible "
+            "with the investor's query. Name each one (e.g. Profile A, B, C).\n\n"
+            f"INVESTOR QUERY: {query}\n\n"
+            "For EACH profile apply exact formulas:\n"
+            "1. Define: zone, purchase price, size, condition\n"
+            "2. Calculate local-currency/sqm and deviation from local market (%)\n"
+            "3. Calculate gross yield, net yield (apply local rental tax), payback\n"
+            "4. If renovation needed: estimate cost from local sources and calculate\n"
+            "   flipping margin (transaction costs: taxes + agency + notary ~5-10%\n"
+            "    unless local data is available)\n"
+            "5. Assign score 0-100 using weighted average of 4 factors\n"
+            "6. Recommend strategy: long-term rental / short-term rental / flipping / avoid\n\n"
+            "RULE: use ONLY real prices and data found by the Market Scout. "
+            "Do not invent values. If rental data for a zone is missing, "
+            "use data from the nearest comparable market."
         )
         props_context_risk = (
-            "L'investitore NON ha fornito immobili specifici.\n"
-            "Analizza i rischi e le opportunita per le 3 zone/profili identificati.\n\n"
-            f"QUERY INVESTITORE: {query}\n\n"
-            "Per ogni zona/profilo cerca:\n"
-            "1. Dati sfratti/morosita per la citta o provincia\n"
-            "2. Aggiornamenti normative affitti brevi 2026 (CIN, limiti)\n"
-            "3. Previsioni prezzi zona 2026-2027\n"
-            "4. Piani riqualificazione urbana o nuove infrastrutture\n"
-            "5. Per profili da ristrutturare: calcola break-even price\n"
-            "   (valore rivendita stimato - costi fissi = prezzo max sostenibile)\n"
-            "Valuta ogni rischio: ALTO/MEDIO/BASSO con evidenza e fonte."
+            "The investor has NOT provided specific properties.\n"
+            "Analyze risks and opportunities for the 3 zones/profiles identified.\n\n"
+            f"INVESTOR QUERY: {query}\n\n"
+            "For each zone/profile search:\n"
+            "1. Eviction / vacancy data for the city or region\n"
+            "2. Current short-term rental regulations for the location\n"
+            "3. Price forecasts for the zone in the next 12-24 months\n"
+            "4. Urban renewal plans or new infrastructure projects\n"
+            "5. For renovation profiles: calculate break-even price\n"
+            "   (estimated resale value - total costs = max sustainable purchase price)\n"
+            "Rate every risk: HIGH/MEDIUM/LOW with evidence and source."
         )
 
     # ── Task ─────────────────────────────────────────────────────────────────
     task_market = Task(
         description=(
-            f"QUERY INVESTITORE: {query}\n\n"
+            f"{lang_instr}"
+            f"INVESTOR QUERY: {query}\n\n"
             f"{props_context_market}"
         ),
         expected_output=(
-            "Per ogni zona: prezzo vendita euro/mq, affitto euro/mq/mese, "
-            "YoY%, trend, quartieri costosi/economici. "
-            "Ogni dato con fonte URL citata. "
-            "Se nessun immobile specifico: TOP 3 zone piu promettenti con prezzi."
+            "Per ogni zona: sale price local-currency/sqm, rent local-currency/sqm/month, "
+            "YoY%, trend, expensive/affordable neighborhoods. "
+            "Every data point with cited URL. "
+            "If no specific properties: TOP 3 most promising zones with prices."
         ),
         agent=market_scout,
     )
 
     task_property = Task(
         description=(
-            f"Usando i dati di mercato trovati, procedi con la valutazione:\n\n"
+            f"{lang_instr}"
+            f"Using the market data found, proceed with valuation:\n\n"
             f"{props_context_property}"
         ),
         expected_output=(
@@ -399,6 +426,7 @@ def _run_crew(
 
     task_risk = Task(
         description=(
+            f"{lang_instr}"
             f"Analizza rischi e opportunita:\n\n"
             f"{props_context_risk}"
         ),
@@ -413,6 +441,7 @@ def _run_crew(
 
     task_recommendation = Task(
         description=(
+            f"{lang_instr}"
             f"Sintetizza tutto in una raccomandazione finale strutturata.\n\n"
             f"QUERY ORIGINALE: {query}\n\n"
             "Produci OBBLIGATORIAMENTE:\n"

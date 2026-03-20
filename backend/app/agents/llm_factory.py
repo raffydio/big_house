@@ -114,8 +114,7 @@ def get_llm(plan: str = "free") -> LLM:
     api_key = _next_gemini_key(keys)
     key_label = f"...{api_key[-6:]}"
 
-    os.environ["GEMINI_API_KEY"] = api_key
-    os.environ["GOOGLE_API_KEY"] = api_key
+    
 
     normalized = (plan or "free").lower()
     if normalized not in PLAN_MODELS:

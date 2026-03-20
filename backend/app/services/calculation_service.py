@@ -22,185 +22,218 @@ from app.agents.search_tool import get_search_tool
 
 logger = logging.getLogger(__name__)
 
+
+# ── Utilità lingua ────────────────────────────────────────────────────────────
+
+def _build_lang_instruction(language: str) -> str:
+    """
+    Istruzione lingua da iniettare in testa a ogni task.
+    Il modello risponderà ESCLUSIVAMENTE nella lingua indicata.
+    """
+    lang_names = {
+        "it": "Italian",  "en": "English",   "fr": "French",
+        "de": "German",   "es": "Spanish",   "pt": "Portuguese",
+        "nl": "Dutch",    "pl": "Polish",    "ru": "Russian",
+        "zh": "Chinese",  "ja": "Japanese",  "ar": "Arabic",
+    }
+    lang_name = lang_names.get(language, "English")
+    return (
+        f"CRITICAL LANGUAGE RULE: You MUST respond EXCLUSIVELY in {lang_name} "
+        f"(language code: {language}). "
+        f"Every single word of your response must be in {lang_name}. "
+        f"Do NOT use any other language regardless of what language "
+        f"your instructions are written in. "
+        f"The user's query is in {lang_name} — match that language exactly.\n\n"
+    )
+
+
 # ── Template agenti ───────────────────────────────────────────────────────────
 
 _TEMPLATE_PROPERTY_VALUATOR = """
-Sei un perito immobiliare esperto con 15 anni di esperienza in valutazioni
-per investimento in Italia. Cerchi sempre dati reali sul web con fonti citate.
+You are an expert real estate appraiser with 15 years of global investment valuation experience.
+You ALWAYS search for real data on the web with cited sources.
 
-Per ogni immobile fornito cerchi su portali locali:
-- immobiliare.it, idealista.it, casa.it, realadvisor.it
+For each property, search on the leading local portals for the target country.
+Examples: Zillow/Realtor (USA), Rightmove/Zoopla (UK), Idealista (ES/IT/PT),
+SeLoger (FR), ImmobilienScout24 (DE), Domain (AU), PropertyFinder (UAE), etc.
 
-Per ogni immobile devi trovare:
-- Prezzo medio di vendita euro/mq nella zona specifica (non media citta)
-- Canone medio di affitto euro/mq/mese nella zona
-- Prezzi di immobili ristrutturati simili nella zona (se applicabile)
-- Costi medi di ristrutturazione da cronoshare.it per quella citta
+For each property you must find:
+- Average sale price in local currency/sqm for the specific zone (not the city average)
+- Average rental rate in local currency/sqm/month for the zone
+- Prices of comparable renovated properties in the zone (if applicable)
+- Average renovation costs from local estimators for that city/region
 
-REGOLA FONDAMENTALE: cita sempre fonte e data per ogni dato numerico.
-Se un dato non e disponibile sul web, indica "dato non disponibile" senza inventare.
-NON usare tabelle markdown. Scrivi tutto in testo chiaro con elenchi puntati.
+FUNDAMENTAL RULE: always cite source and date for every number.
+If data is not available on the web, state 'data not available' — do not invent values.
+Do NOT use markdown tables. Write everything in plain text with bullet lists.
 """
 
 _TEMPLATE_FINANCIAL_ANALYST = """
-Sei un analista finanziario specializzato in investimenti immobiliari italiani.
-Applichi formule precise e confronti gli immobili in modo chiaro.
+You are a financial analyst specialized in global real estate investment.
+You apply precise formulas and compare properties in a clear way.
 
-FORMULA RATA MUTUO (quando applicabile):
-Rata mensile = P * [i(1+i)^n] / [(1+i)^n - 1]
-dove P = capitale, i = tasso mensile (tasso annuo / 12), n = numero mesi
+MORTGAGE PAYMENT FORMULA (when applicable):
+Monthly payment = P * [i(1+i)^n] / [(1+i)^n - 1]
+where P = principal, i = monthly rate (annual rate / 12), n = number of months
 
-Cerca il tasso mutuo fisso attuale su mutui.it o facile.it e citalo con fonte.
+Search the current fixed mortgage rate for the target country from a reputable local source
+(e.g. a central bank, bank comparison site, or financial news) and cite it.
 
-Per ogni immobile calcoli le metriche rilevanti in base all'obiettivo.
-Usa i dati reali trovati dal Property Valuator.
+For each property calculate the metrics relevant to the investment goal.
+Use the real data found by the Property Valuator.
 
-NON usare tabelle markdown con trattini e pipe.
-Presenta i numeri come elenchi puntati per ogni immobile, ad esempio:
+Do NOT use markdown tables with dashes and pipes.
+Present numbers as bullet lists per property, for example:
 
-  Immobile 1 - Via Roma 10, Napoli
-  - Prezzo acquisto: 250.000 euro
-  - Costo ristrutturazione: 40.000 euro
-  - Costi accessori (notaio 2% + agenzia 3% + IMU 1%): 15.000 euro
-  - Investimento totale: 305.000 euro
-  - Prezzo rivendita stimato: 340.000 euro
-  - Margine di profitto lordo: 35.000 euro
-  - Margine %: 11.5%
-  - Score: 72/100 (breakdown: scostamento 80/100, margine 65/100, liquidita 70/100, rischio 75/100)
+  Property 1 - 10 Main Street, Manchester
+  - Purchase price: 250,000 GBP
+  - Renovation budget: 40,000 GBP
+  - Transaction costs (stamp duty + agency + legal fees ~5-8%): 18,000 GBP
+  - Total investment: 308,000 GBP
+  - Estimated resale value: 345,000 GBP
+  - Gross profit margin: 37,000 GBP
+  - Margin %: 12.0%
+  - Score: 74/100 (breakdown: market deviation 80/100, margin 68/100, liquidity 72/100, risk 76/100)
 """
 
 _TEMPLATE_COMPARATOR = """
-Sei un consulente senior di investimenti immobiliari.
-Produci raccomandazioni con numeri precisi e motivazioni concrete.
+You are a senior real estate investment advisor.
+You produce recommendations with precise numbers and concrete justifications.
 
-Il tuo compito e sintetizzare le analisi in una raccomandazione finale chiara.
+Your task is to synthesize all analyses into a clear final recommendation.
 
-STRUTTURA OUTPUT OBBLIGATORIA (testo puro, nessuna tabella markdown):
+MANDATORY OUTPUT STRUCTURE (plain text, no markdown tables):
 
-1. RISPOSTA DIRETTA (2-3 frasi con i numeri chiave)
+1. DIRECT ANSWER (2-3 sentences with key numbers)
 
-2. CONFRONTO IMMOBILI
-   Per ogni immobile: nome, metrica principale, score, 1 pro e 1 contro.
+2. PROPERTY COMPARISON
+   For each property: name, key metric, score, 1 pro and 1 con.
 
-3. CLASSIFICA DAL MIGLIORE AL PEGGIORE
-   Con motivazione numerica per ogni posizione.
+3. RANKING (best to worst)
+   With numerical justification for each position.
 
-4. IMMOBILE CONSIGLIATO
-   Nome, strategia dettagliata, numeri chiave, orizzonte temporale.
+4. RECOMMENDED PROPERTY
+   Name, detailed strategy, key numbers, time horizon.
 
-5. AVVERTENZE CRITICHE (2-3 punti)
-   Solo le piu importanti da verificare prima dell'acquisto.
+5. CRITICAL WARNINGS (2-3 points)
+   The most important things to verify before purchasing.
 
-6. VERDICT: COMPRA / VALUTA CON CAUTELA / EVITA
-   Con 3 numeri a supporto e motivazione in 2 righe.
+6. VERDICT: BUY / EVALUATE WITH CAUTION / AVOID
+   With 3 supporting numbers and 2-line justification.
 
-NON usare mai tabelle markdown con | e ----.
-Usa solo testo, elenchi puntati e numeri.
+NEVER use markdown tables with | and ----.
+Use only plain text, bullet lists, and numbers.
 """
 
 # ── Istruzioni finanziarie specifiche per obiettivo ───────────────────────────
 
 _GOAL_CONTEXT = {
     "flipping": {
-        "label": "Flipping — Vendita post-ristrutturazione",
-        "horizon": "12-18 mesi",
+        "label": "Flipping — Post-renovation resale",
+        "horizon": "12-18 months",
         "financial_instructions": """
-Per ogni immobile calcola il MARGINE DI FLIPPING:
+For each property calculate the FLIPPING MARGIN:
 
-1. Costo totale acquisto = prezzo + costi accessori (notaio 2% + agenzia 3% + IMU 1%)
-2. Costo ristrutturazione = budget indicato (o stima da cronoshare.it se non indicato)
-3. Investimento totale = costo acquisto + ristrutturazione
-4. Prezzo rivendita stimato = euro/mq ristrutturati zona * superficie
-5. Margine lordo = prezzo rivendita stimato - investimento totale
-6. Margine % = (margine lordo / investimento totale) * 100
-7. ROI annualizzato = margine % / 1.5 * 100 (su base 18 mesi)
-8. Break-even price = prezzo rivendita - ristrutturazione - costi accessori
+1. Total purchase cost = asking price + transaction costs
+   (taxes + agency + legal/notary fees — use actual local rates
+    or estimate 5-10% if local data is unavailable)
+2. Renovation cost = budget provided (or estimate from local sources if not provided)
+3. Total investment = purchase cost + renovation
+4. Estimated resale price = renovated local-currency/sqm * sqm
+5. Gross margin = estimated resale - total investment
+6. Margin % = (gross margin / total investment) * 100
+7. Annualized ROI = margin % / 1.5 * 100 (18-month base)
+8. Break-even price = resale value - renovation - transaction costs
 
-Score 0-100 pesato su:
-- Scostamento prezzo acquisto da mercato (25%): piu sotto mercato = score alto
-- Margine flipping % (35%): target 20%+ = score alto
-- Liquidita zona (25%): stima dalla vivacita mercato locale
-- Rischio cantiere (15%): stato immobile e complessita ristrutturazione
+Score 0-100 weighted on:
+- Purchase price deviation from market (25%): further below = higher score
+- Flipping margin % (35%): target 20%+ = high score
+- Zone liquidity (25%): estimated from local market activity
+- Construction risk (15%): property condition and renovation complexity
 
-NON calcolare yield da affitto o cash-flow mensile per questo obiettivo.
+Do NOT calculate rental yield or monthly cash-flow for this goal.
 """,
     },
     "affitto_lungo": {
-        "label": "Affitto a lungo termine",
-        "horizon": "10-15 anni",
+        "label": "Long-term rental",
+        "horizon": "10-15 years",
         "financial_instructions": """
-Per ogni immobile calcola i PARAMETRI DI REDDITEZZA DA AFFITTO:
+For each property calculate the RENTAL YIELD PARAMETERS:
 
-1. Canone mensile stimato = euro/mq/mese zona * superficie (o canone indicato)
-2. Ricavo lordo annuo = canone * 12
-3. Cedolare secca 21% = ricavo lordo * 0.21
-4. Spese condominiali annue = dato reale o stima 600-1200 euro/anno
-5. Reddito netto annuo = lordo - cedolare - spese cond.
-6. Acconto 20% (o % indicata) = prezzo * 0.20
-7. Mutuo = prezzo - acconto
-8. Cerca tasso mutuo fisso attuale su mutui.it
-9. Rata mensile mutuo = calcola con formula esatta
-10. Cash-flow mensile netto = (reddito netto / 12) - rata mutuo
-11. Yield lordo % = (lordo / prezzo) * 100
-12. Yield netto su capitale proprio % = (netto / acconto) * 100
-13. Payback anni = prezzo / reddito netto
+1. Estimated monthly rent = local-currency/sqm/month * sqm (or provided rent)
+2. Gross annual income = monthly rent * 12
+3. Local rental income tax = gross income * local_tax_rate
+   (search the applicable rate for the country; common range: 15-30%)
+4. Annual service/maintenance charges = actual figure or estimate 1% of value/year
+5. Net annual income = gross - tax - charges
+6. Down payment (% provided or default 20%) = price * pct
+7. Mortgage = price - down payment
+8. Search current fixed mortgage rate from a local source and cite it
+9. Monthly mortgage payment = calculate with exact formula
+10. Net monthly cash-flow = (net annual income / 12) - mortgage payment
+11. Gross yield % = (gross annual / price) * 100
+12. Net yield on own capital % = (net annual / down payment) * 100
+13. Payback years = price / net annual income
 
-Score 0-100 pesato su:
-- Yield lordo % (30%): target 6%+ = score alto
-- Cash-flow mensile (30%): positivo = score alto
-- Scostamento prezzo da mercato (20%)
-- Trend affitti zona (20%)
+Score 0-100 weighted on:
+- Gross yield % (30%): target 6%+ = high score
+- Monthly cash-flow (30%): positive = high score
+- Price deviation from market (20%)
+- Rental trend in zone (20%)
 """,
     },
     "affitto_breve": {
-        "label": "Affitto breve (Airbnb/Booking)",
-        "horizon": "3-5 anni",
+        "label": "Short-term rental (Airbnb/Booking)",
+        "horizon": "3-5 years",
         "financial_instructions": """
-Per ogni immobile calcola i PARAMETRI AIRBNB:
+For each property calculate SHORT-TERM RENTAL PARAMETERS:
 
-Cerca su bnbval.com o airdna.co per la zona specifica:
-1. Prezzo medio notte zona
-2. Tasso di occupazione zona %
-3. Notti occupate anno = 365 * tasso occupazione
-4. Ricavo lordo annuo = notti * prezzo notte
-5. Costi gestione = lordo * 0.28
-6. Cedolare secca = (lordo - gestione) * 0.21
-7. Reddito netto annuo = lordo - gestione - cedolare
-8. Acconto 20% + mutuo + rata mensile (formula + tasso web)
-9. Cash-flow mensile netto = (netto / 12) - rata mutuo
-10. Yield lordo % = (lordo / prezzo) * 100
-11. Yield netto su cap. proprio % = (netto / acconto) * 100
-12. Payback anni = prezzo / reddito netto
+Search on AirDNA, BnbVal, or local STR analytics for the specific zone:
+1. Average nightly rate in the zone
+2. Zone occupancy rate %
+3. Occupied nights/year = 365 * occupancy rate
+4. Gross annual revenue = nights * nightly rate
+5. Management costs = gross * 0.28 (platform fees + cleaning + management)
+6. Local short-term rental income tax = (gross - management) * local_tax_rate
+   (search applicable rate for the country)
+7. Net annual income = gross - management - tax
+8. Down payment + mortgage + monthly payment (formula + current local rate)
+9. Net monthly cash-flow = (net annual / 12) - mortgage payment
+10. Gross yield % = (gross annual / price) * 100
+11. Net yield on own capital % = (net annual / down payment) * 100
+12. Payback years = price / net annual income
 
-Nota normativa CIN 2026: dal 3 immobile in poi scatta P.IVA obbligatoria.
+Regulatory note: search current STR regulations for the specific city/country
+(licensing, night caps, registration requirements). Note any restrictions found.
 
-Score 0-100 pesato su:
-- Potenziale ricavo lordo annuo (30%)
-- Tasso occupazione zona (30%)
-- Cash-flow mensile (25%)
-- Rischio normativo e stagionalita (15%)
+Score 0-100 weighted on:
+- Gross annual revenue potential (30%)
+- Zone occupancy rate (30%)
+- Net monthly cash-flow (25%)
+- Regulatory and seasonality risk (15%)
 """,
     },
     "prima_casa": {
-        "label": "Prima casa con valorizzazione",
-        "horizon": "5-10 anni",
+        "label": "Primary residence with appreciation",
+        "horizon": "5-10 years",
         "financial_instructions": """
-Per ogni immobile calcola i PARAMETRI PRIMA CASA:
+For each property calculate PRIMARY RESIDENCE PARAMETERS:
 
-1. Prezzo acquisto + costi accessori (prima casa: imposta 2% invece di 9%)
-2. Acconto 10-20% + mutuo + rata mensile (formula + tasso web)
-3. Sostenibilita rata: rata / reddito medio zona (target < 30%)
-4. Crescita YoY zona trovata su portali: applica a 5 anni
-5. Valore stimato a 5 anni = prezzo * (1 + crescita YoY)^5
-6. Plusvalenza potenziale = valore 5y - prezzo acquisto
-7. Se da ristrutturare: costo totale e valore post-ristr.
-8. Risparmio affitto vs mutuo = canone zona - rata mutuo
+1. Purchase price + transaction costs
+   (apply local first-home buyer rates if available, otherwise estimate 3-8%)
+2. Down payment (10-20%) + mortgage + monthly payment (formula + current local rate)
+3. Affordability: monthly payment / average local income (target < 30%)
+4. YoY zone growth found on portals: project 5 years
+5. Estimated value in 5 years = price * (1 + YoY growth)^5
+6. Potential appreciation = 5y value - purchase price
+7. If renovation needed: total cost and post-renovation value
+8. Rent vs buy comparison = zone rental rate - mortgage payment
 
-Score 0-100 pesato su:
-- Sostenibilita rata (30%): rata < 30% reddito = score alto
-- Potenziale valorizzazione % a 5 anni (30%)
-- Qualita zona e servizi (20%)
-- Stato immobile e costi immediati (20%)
+Score 0-100 weighted on:
+- Payment affordability (30%): payment < 30% income = high score
+- 5-year appreciation potential % (30%)
+- Zone quality and amenities (20%)
+- Property condition and immediate costs (20%)
 """,
     },
 }
@@ -213,6 +246,7 @@ def run_compare_roi(
     investment_goal: str = "affitto_lungo",
     plan: str = "free",
     user_id: Optional[int] = None,
+    language: str = "it",
 ) -> dict:
     """
     Calcola ROI comparativo per N immobili (max 5).
@@ -221,6 +255,7 @@ def run_compare_roi(
         name, address, price, size_sqm, rooms, condition,
         renovation_budget, mortgage_rate, mortgage_years,
         down_payment_pct, current_rent, floor, elevator, notes
+    language: codice ISO 639-1 — gli agenti risponderanno in quella lingua.
     """
     if not properties:
         raise ValueError("Almeno un immobile e richiesto.")
@@ -229,7 +264,7 @@ def run_compare_roi(
 
     logger.info(
         f"[calcola_roi] START — user={user_id}, plan={plan}, "
-        f"goal={investment_goal}, n_properties={len(properties)}"
+        f"goal={investment_goal}, lang={language}, n_properties={len(properties)}"
     )
 
     kwargs = dict(
@@ -237,6 +272,7 @@ def run_compare_roi(
         investment_goal=investment_goal,
         plan=plan,
         user_id=user_id,
+        language=language,
     )
 
     try:
@@ -269,6 +305,7 @@ def _run_roi_crew(
     user_id: Optional[int],
     llm_type: str,
     forced_llm=None,
+    language: str = "it",
 ) -> dict:
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
@@ -279,6 +316,7 @@ def _run_roi_crew(
     goal_horizon = goal_info["horizon"]
     goal_fin_inst = goal_info["financial_instructions"]
     props_text   = _format_properties(properties)
+    lang_instr   = _build_lang_instruction(language)
 
     # ── Agenti ───────────────────────────────────────────────────────────────
     property_valuator = Agent(
@@ -324,6 +362,7 @@ def _run_roi_crew(
     # ── Task ─────────────────────────────────────────────────────────────────
     task_valuation = Task(
         description=(
+            f"{lang_instr}"
             f"OBIETTIVO INVESTIMENTO: {goal_label} (orizzonte {goal_horizon})\n\n"
             f"IMMOBILI DA ANALIZZARE:\n{props_text}\n\n"
             f"Per ogni immobile:\n"
@@ -344,6 +383,7 @@ def _run_roi_crew(
 
     task_financials = Task(
         description=(
+            f"{lang_instr}"
             f"Calcola le metriche finanziarie per ogni immobile.\n\n"
             f"OBIETTIVO: {goal_label}\n\n"
             f"IMMOBILI:\n{props_text}\n\n"
@@ -361,6 +401,7 @@ def _run_roi_crew(
 
     task_comparison = Task(
         description=(
+            f"{lang_instr}"
             f"Sintetizza e produci la raccomandazione finale.\n\n"
             f"OBIETTIVO: {goal_label} (orizzonte {goal_horizon})\n\n"
             f"IMMOBILI:\n{props_text}\n\n"
