@@ -1,0 +1,74 @@
+# render.yaml — Big House AI Sprint 4
+# Deploy: Web Service (FastAPI) + Background Worker (Celery) + Key Value (Redis)
+#
+# Costo fisso: ~$17/mese (Web $7 + Worker $7 + Redis $3)
+# Variabile: token Gemini/Claude (~$0.004/analisi)
+#
+# Setup:
+#   1. Connetti il repo GitHub su render.com
+#   2. Crea nuovo Blueprint e punta a questo file
+#   3. Render crea automaticamente i 3 servizi
+#   4. Aggiungi le env var mancanti (GEMINI_API_KEY, SECRET_KEY, ecc.)
+#      nel dashboard di ogni servizio (NON nel file YAML — per sicurezza)
+
+services:
+
+  # ── 1. Web Service — FastAPI ─────────────────────────────────────────────
+  - type: web
+    name: bighouse-api
+    runtime: python
+    region: frankfurt              # eu-central per GDPR
+    plan: starter                  # $7/mese
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bighouse-redis
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Le seguenti variabili vanno aggiunte manualmente nel dashboard Render:
+      # GEMINI_API_KEY, ANTHROPIC_API_KEY, SECRET_KEY,
+      # STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+      # STRIPE_PRICE_BASIC, STRIPE_PRICE_PRO, STRIPE_PRICE_PLUS,
+      # FRONTEND_URL, DATABASE_URL (se PostgreSQL)
+
+  # ── 2. Background Worker — Celery ───────────────────────────────────────
+  - type: worker
+    name: bighouse-worker
+    runtime: python
+    region: frankfurt
+    plan: starter                  # $7/mese
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: >
+      celery -A app.worker worker
+      -Q q_plus,q_pro,q_basic,q_free
+      --concurrency=2
+      --prefetch-multiplier=1
+      --loglevel=info
+      --max-tasks-per-child=50
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bighouse-redis
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Stesse secrets del web service — aggiungerle manualmente nel dashboard
+
+  # ── 3. Key Value — Redis ─────────────────────────────────────────────────
+  - type: redis
+    name: bighouse-redis
+    region: frankfurt
+    plan: starter                  # $3/mese — 25MB RAM, sufficiente per i job
+    maxmemoryPolicy: allkeys-lru   # evict vecchi job quando pieno

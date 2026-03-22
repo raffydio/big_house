@@ -12,6 +12,7 @@ email-validator
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt
+argon2-cffi
 
 # ── Database & Client HTTP ──
 aiosqlite
@@ -22,11 +23,17 @@ crewai[google-genai]>=0.30.0
 crewai-tools
 litellm
 google-generativeai
-google-genai              # SDK nativo Gemini per Google Search Grounding
+google-genai
 
 # ── Web Search — Cascata Google → Tavily → DuckDuckGo ──
-tavily-python             # Fallback 1 — $0.008/query, PAYGO — richiede TAVILY_API_KEY
-duckduckgo-search         # Fallback 2 — gratis, zero API key, sempre disponibile
+tavily-python
+duckduckgo-search
+
+# ── SPRINT 4 — Async infrastructure ──────────────────────────────────────────
+celery[redis]>=5.3.0          # task queue + Redis broker/backend
+redis>=5.0.0                  # client Redis (job_store.py)
+# flower>=2.0.0               # opzionale: dashboard monitoraggio Celery
+#                             # avvio: celery -A app.worker flower --port=5555
 
 # ── Integrazioni & Utility ──
 stripe

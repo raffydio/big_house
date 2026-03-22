@@ -150,12 +150,13 @@ def run_deep_research(
     plan: str = "free",
     user_id: Optional[int] = None,
     language: str = "it",
+    task_callback=None,
 ) -> dict:
     """
     Deep Research immobiliare con 4 agenti specializzati.
     SPRINT 2: tenta Gemini prima, fallback automatico su Claude se necessario.
-    language: codice ISO 639-1 della lingua dell'utente (es. 'en', 'es', 'fr').
-              Gli agenti risponderanno nella stessa lingua della query.
+    SPRINT 4: task_callback(task_output) opzionale — chiamato dopo ogni task
+              CrewAI per aggiornare il progresso in Redis (via job_store).
     """
     logger.info(
         f"Deep Research START — user={user_id}, plan={plan}, "
@@ -171,6 +172,7 @@ def run_deep_research(
             user_id=user_id,
             llm_type="gemini",
             language=language,
+            task_callback=task_callback,
         )
     except Exception as e:
         if should_fallback(e):
@@ -198,6 +200,7 @@ def run_deep_research(
         llm_type="claude",
         forced_llm=fallback_llm,
         language=language,
+        task_callback=task_callback,
     )
 
 
@@ -231,12 +234,14 @@ def _run_crew(
     llm_type: str,
     forced_llm=None,
     language: str = "it",
+    task_callback=None,
 ) -> dict:
     """
     Esegue il crew CrewAI con il provider LLM specificato.
     llm_type: "gemini" | "claude"
     forced_llm: se fornito, usa questo LLM invece di chiamare get_llm()
     language: codice ISO della lingua in cui rispondere
+    task_callback: callable(task_output) opzionale — chiamato dopo ogni Task
     """
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
@@ -406,6 +411,7 @@ def _run_crew(
             "If no specific properties: TOP 3 most promising zones with prices."
         ),
         agent=market_scout,
+        callback=task_callback,
     )
 
     task_property = Task(
@@ -422,6 +428,7 @@ def _run_crew(
         ),
         agent=property_analyst,
         context=[task_market],
+        callback=task_callback,
     )
 
     task_risk = Task(
@@ -437,6 +444,7 @@ def _run_crew(
         ),
         agent=risk_assessor,
         context=[task_market, task_property],
+        callback=task_callback,
     )
 
     task_recommendation = Task(
@@ -459,6 +467,7 @@ def _run_crew(
         ),
         agent=investment_strategist,
         context=[task_market, task_property, task_risk],
+        callback=task_callback,
     )
 
     # ── Esecuzione ────────────────────────────────────────────────────────────

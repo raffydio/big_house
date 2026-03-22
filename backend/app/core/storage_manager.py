@@ -7,17 +7,6 @@
 #   BASIC: sessioni conservate 30 giorni, DOCX conservati 30 giorni, max 500MB
 #   PRO:   sessioni conservate 180 giorni, DOCX conservati 180 giorni, max 2GB
 #   PLUS:  sessioni conservate 365 giorni, DOCX conservati 365 giorni, max 10GB
-#
-# COSA VIENE SALVATO:
-#   - Testo delle analisi (Deep Research, Calcola ROI) → PostgreSQL (TEXT)
-#   - File DOCX generati → filesystem locale (Render) o R2/S3
-#   - Metadati sessione → PostgreSQL
-#   - Search cache → PostgreSQL con TTL 6h (gestita da search_tool.py)
-#
-# CLEANUP AUTOMATICO:
-#   - Al startup dell'app
-#   - Ogni 24h tramite background task FastAPI
-#   - On-demand via endpoint admin
 
 import os
 import shutil
@@ -28,13 +17,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Retention policy per piano ────────────────────────────────────────────────
 PLAN_RETENTION = {
     "free": {
-        "session_days": 7,        # giorni di conservazione sessioni/testo
-        "docx_days":    0,        # 0 = DOCX non vengono salvati su disco
-        "storage_mb":   0,        # nessuno storage file
-        "max_sessions": 20,       # massimo sessioni totali conservate
+        "session_days": 7,
+        "docx_days":    0,
+        "storage_mb":   0,
+        "max_sessions": 20,
     },
     "basic": {
         "session_days": 30,
@@ -45,28 +33,27 @@ PLAN_RETENTION = {
     "pro": {
         "session_days": 180,
         "docx_days":    180,
-        "storage_mb":   2048,     # 2 GB in MB
+        "storage_mb":   2048,
         "max_sessions": 1000,
     },
     "plus": {
         "session_days": 365,
         "docx_days":    365,
-        "storage_mb":   10240,    # 10 GB in MB
-        "max_sessions": 9999,     # praticamente illimitato
+        "storage_mb":   10240,
+        "max_sessions": 9999,
     },
 }
 
-# Directory base per i file DOCX
 DOCX_BASE_DIR = Path(os.getenv("DOCX_STORAGE_PATH", "/tmp/bighouse_docx"))
 DOCX_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def get_user_docx_dir(user_id: int) -> Path:
-    """Restituisce la directory DOCX per un utente, creandola se non esiste."""
     user_dir = DOCX_BASE_DIR / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
-# ── DB helper ─────────────────────────────────────────────────────────────────
+
 def _get_conn():
     try:
         from app.core.database import get_db_connection
@@ -75,27 +62,22 @@ def _get_conn():
         logger.error(f"DB connection failed: {e}")
         return None
 
-# ── Schema setup ──────────────────────────────────────────────────────────────
+
 def ensure_storage_schema():
-    """
-    Crea le tabelle necessarie se non esistono.
-    Da chiamare all'avvio dell'app in main.py.
-    """
     conn = _get_conn()
     if not conn:
         return
     try:
         with conn:
-            # Sessioni con testo completo delle analisi
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id           TEXT PRIMARY KEY,
                     user_id      INTEGER NOT NULL,
-                    feature      TEXT NOT NULL,       -- 'deepresearch' | 'calcola'
+                    feature      TEXT NOT NULL,
                     title        TEXT NOT NULL,
-                    result_text  TEXT,                -- testo completo analisi AI
+                    result_text  TEXT,
                     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at   TIMESTAMP,           -- NULL = mai scadere
+                    expires_at   TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             """)
@@ -107,20 +89,18 @@ def ensure_storage_schema():
                 CREATE INDEX IF NOT EXISTS idx_sessions_expires
                 ON sessions(expires_at)
             """)
-
-            # File DOCX generati
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS stored_files (
                     id           TEXT PRIMARY KEY,
                     user_id      INTEGER NOT NULL,
                     session_id   TEXT,
                     filename     TEXT NOT NULL,
-                    filepath     TEXT NOT NULL,       -- path assoluto su disco
+                    filepath     TEXT NOT NULL,
                     size_bytes   INTEGER DEFAULT 0,
                     feature      TEXT,
                     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     expires_at   TIMESTAMP,
-                    downloaded   INTEGER DEFAULT 0,   -- contatore download
+                    downloaded   INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             """)
@@ -132,8 +112,6 @@ def ensure_storage_schema():
                 CREATE INDEX IF NOT EXISTS idx_stored_files_expires
                 ON stored_files(expires_at)
             """)
-
-            # Storage usage per utente (aggiornato ad ogni operazione)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_storage (
                     user_id      INTEGER PRIMARY KEY,
@@ -142,14 +120,13 @@ def ensure_storage_schema():
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )
             """)
-
         logger.info("Storage schema OK")
     except Exception as e:
         logger.error(f"ensure_storage_schema error: {e}")
     finally:
         conn.close()
 
-# ── Salvataggio sessione ──────────────────────────────────────────────────────
+
 def save_session(
     session_id: str,
     user_id: int,
@@ -158,11 +135,6 @@ def save_session(
     title: str,
     result_text: str,
 ) -> bool:
-    """
-    Salva il testo di una sessione (Deep Research o Calcola ROI).
-    Calcola automaticamente la scadenza in base al piano.
-    Verifica il limite max_sessions prima di salvare.
-    """
     conn = _get_conn()
     if not conn:
         return False
@@ -177,7 +149,6 @@ def save_session(
 
     try:
         with conn:
-            # Controlla limite sessioni per piano
             count = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE user_id = ?",
                 (user_id,)
@@ -185,7 +156,6 @@ def save_session(
 
             max_sessions = retention["max_sessions"]
             if count >= max_sessions:
-                # Elimina la sessione più vecchia per fare posto
                 conn.execute("""
                     DELETE FROM sessions
                     WHERE id = (
@@ -216,7 +186,7 @@ def save_session(
     finally:
         conn.close()
 
-# ── Salvataggio DOCX ──────────────────────────────────────────────────────────
+
 def save_docx(
     file_id: str,
     user_id: int,
@@ -226,20 +196,12 @@ def save_docx(
     file_bytes: bytes,
     feature: str = "deepresearch",
 ) -> Optional[str]:
-    """
-    Salva un file DOCX su disco e registra i metadati nel DB.
-    Gli utenti FREE non hanno DOCX salvati (docx_days = 0).
-    Verifica che l'utente non superi il suo storage limit.
-    Restituisce il filepath se OK, None altrimenti.
-    """
     retention = PLAN_RETENTION.get(plan, PLAN_RETENTION["free"])
 
-    # FREE: nessun salvataggio file
     if retention["docx_days"] == 0:
         logger.info(f"User {user_id} (FREE): DOCX non salvato su disco")
         return None
 
-    # Controlla quota storage
     used = get_storage_used_bytes(user_id)
     max_bytes = retention["storage_mb"] * 1024 * 1024
     if used + len(file_bytes) > max_bytes:
@@ -253,7 +215,6 @@ def save_docx(
     if not conn:
         return None
 
-    # Salva su disco
     user_dir = get_user_docx_dir(user_id)
     filepath = user_dir / filename
     try:
@@ -274,7 +235,6 @@ def save_docx(
             """, (file_id, user_id, session_id, filename, str(filepath),
                   len(file_bytes), feature, datetime.utcnow(), expires_at))
 
-            # Aggiorna usage
             conn.execute("""
                 INSERT INTO user_storage (user_id, used_bytes, updated_at)
                 VALUES (?, ?, ?)
@@ -290,15 +250,13 @@ def save_docx(
         return str(filepath)
     except Exception as e:
         logger.error(f"save_docx DB error: {e}")
-        # rollback file
         filepath.unlink(missing_ok=True)
         return None
     finally:
         conn.close()
 
-# ── Storage info ──────────────────────────────────────────────────────────────
+
 def get_storage_used_bytes(user_id: int) -> int:
-    """Ritorna i byte usati dall'utente in stored_files."""
     conn = _get_conn()
     if not conn:
         return 0
@@ -313,11 +271,8 @@ def get_storage_used_bytes(user_id: int) -> int:
     finally:
         conn.close()
 
+
 def get_storage_info(user_id: int, plan: str) -> dict:
-    """
-    Restituisce un riepilogo dello storage per un utente.
-    Usato dall'endpoint /storage e dalla dashboard.
-    """
     retention = PLAN_RETENTION.get(plan, PLAN_RETENTION["free"])
     max_bytes = retention["storage_mb"] * 1024 * 1024
     used = get_storage_used_bytes(user_id)
@@ -359,9 +314,8 @@ def get_storage_info(user_id: int, plan: str) -> dict:
         "files":          files,
     }
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
+
 def cleanup_expired_sessions() -> int:
-    """Elimina le sessioni scadute dal DB. Restituisce il numero eliminato."""
     conn = _get_conn()
     if not conn:
         return 0
@@ -381,12 +335,8 @@ def cleanup_expired_sessions() -> int:
     finally:
         conn.close()
 
+
 def cleanup_expired_files() -> int:
-    """
-    Elimina i file DOCX scaduti dal disco e dal DB.
-    Aggiorna lo storage usage degli utenti coinvolti.
-    Restituisce il numero di file eliminati.
-    """
     conn = _get_conn()
     if not conn:
         return 0
@@ -400,13 +350,11 @@ def cleanup_expired_files() -> int:
         ).fetchall()
 
         for file_id, user_id, filepath, size_bytes in rows:
-            # Elimina file da disco
             try:
                 Path(filepath).unlink(missing_ok=True)
             except Exception as e:
                 logger.warning(f"File delete error ({filepath}): {e}")
 
-            # Elimina dal DB e aggiorna usage
             with conn:
                 conn.execute("DELETE FROM stored_files WHERE id = ?", (file_id,))
                 conn.execute("""
@@ -425,11 +373,8 @@ def cleanup_expired_files() -> int:
     finally:
         conn.close()
 
+
 def cleanup_orphan_files() -> int:
-    """
-    Elimina i file fisici su disco che non hanno più un record in DB
-    (es. da crash durante il salvataggio). Pulizia di sicurezza.
-    """
     if not DOCX_BASE_DIR.exists():
         return 0
 
@@ -439,11 +384,9 @@ def cleanup_orphan_files() -> int:
 
     deleted = 0
     try:
-        # Raccoglie tutti i filepath registrati nel DB
         rows = conn.execute("SELECT filepath FROM stored_files").fetchall()
         registered = {r[0] for r in rows}
 
-        # Scansiona il filesystem
         for filepath in DOCX_BASE_DIR.rglob("*.docx"):
             if str(filepath) not in registered:
                 try:
@@ -460,21 +403,17 @@ def cleanup_orphan_files() -> int:
     finally:
         conn.close()
 
+
 def cleanup_search_cache_expired() -> int:
-    """Delega alla search_tool per pulizia cache ricerche scadute."""
-    try:
-        from app.agents.search_tool import cleanup_search_cache
-        cleanup_search_cache()
-        return 1
-    except Exception as e:
-        logger.warning(f"cleanup_search_cache: {e}")
-        return 0
+    """
+    Placeholder per pulizia cache ricerche.
+    search_tool.py usa provider esterni on-demand senza cache locale —
+    non c'è nulla da pulire. Restituisce 0 per compatibilità con run_full_cleanup().
+    """
+    return 0
+
 
 def run_full_cleanup() -> dict:
-    """
-    Esegue tutte le operazioni di cleanup.
-    Chiamare all'avvio e ogni 24h.
-    """
     logger.info("=== CLEANUP START ===")
     result = {
         "sessions_deleted": cleanup_expired_sessions(),
@@ -486,24 +425,18 @@ def run_full_cleanup() -> dict:
     logger.info(f"=== CLEANUP END: {result} ===")
     return result
 
-# ── Eliminazione utente (GDPR) ────────────────────────────────────────────────
+
 def delete_user_data(user_id: int) -> bool:
-    """
-    Elimina TUTTI i dati di un utente: sessioni, file, storage record.
-    Da chiamare quando l'utente cancella il proprio account (GDPR).
-    """
     conn = _get_conn()
     if not conn:
         return False
 
     try:
-        # 1. Elimina tutti i file fisici
         user_dir = get_user_docx_dir(user_id)
         if user_dir.exists():
             shutil.rmtree(user_dir, ignore_errors=True)
             logger.info(f"GDPR: cartella utente {user_id} eliminata")
 
-        # 2. Elimina dal DB (CASCADE gestisce stored_files e user_storage)
         with conn:
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM stored_files WHERE user_id = ?", (user_id,))

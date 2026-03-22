@@ -247,15 +247,11 @@ def run_compare_roi(
     plan: str = "free",
     user_id: Optional[int] = None,
     language: str = "it",
+    task_callback=None,
 ) -> dict:
     """
     Calcola ROI comparativo per N immobili (max 5).
-
-    Ogni property dict puo contenere:
-        name, address, price, size_sqm, rooms, condition,
-        renovation_budget, mortgage_rate, mortgage_years,
-        down_payment_pct, current_rent, floor, elevator, notes
-    language: codice ISO 639-1 — gli agenti risponderanno in quella lingua.
+    SPRINT 4: task_callback(task_output) opzionale per progress tracking.
     """
     if not properties:
         raise ValueError("Almeno un immobile e richiesto.")
@@ -273,6 +269,7 @@ def run_compare_roi(
         plan=plan,
         user_id=user_id,
         language=language,
+        task_callback=task_callback,
     )
 
     try:
@@ -306,6 +303,7 @@ def _run_roi_crew(
     llm_type: str,
     forced_llm=None,
     language: str = "it",
+    task_callback=None,
 ) -> dict:
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
@@ -379,6 +377,7 @@ def _run_roi_crew(
             "canoni reali, valore post-ristr. se applicabile. Testo puro."
         ),
         agent=property_valuator,
+        callback=task_callback,
     )
 
     task_financials = Task(
@@ -397,6 +396,7 @@ def _run_roi_crew(
         ),
         agent=financial_analyst,
         context=[task_valuation],
+        callback=task_callback,
     )
 
     task_comparison = Task(
@@ -420,6 +420,7 @@ def _run_roi_crew(
         ),
         agent=comparator,
         context=[task_valuation, task_financials],
+        callback=task_callback,
     )
 
     # ── Esecuzione ────────────────────────────────────────────────────────────
