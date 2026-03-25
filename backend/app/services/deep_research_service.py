@@ -5,6 +5,7 @@
 # Il resto del codice (agenti, task, template) rimane invariato.
 
 import logging
+import time
 from typing import Optional
 
 from crewai import Agent, Task, Crew, Process
@@ -163,32 +164,57 @@ def run_deep_research(
         f"lang={language}, properties={len(properties)}, query='{query[:60]}'"
     )
 
-    # ── Tentativo 1: Gemini ──
-    try:
-        return _run_crew(
-            query=query,
-            properties=properties,
-            plan=plan,
-            user_id=user_id,
-            llm_type="gemini",
-            language=language,
-            task_callback=task_callback,
-        )
-    except Exception as e:
-        if should_fallback(e):
-            logger.warning(
-                f"[deep_research] Gemini fallito ({type(e).__name__}), "
-                f"passo a Claude. Errore: {str(e)[:120]}"
-            )
-        else:
-            raise
+    # ── Tentativo Gemini con retry + backoff su 429 ───────────────────────────
+    # Causa principale dei fallimenti: il free tier di Gemini 2.5 Flash ha
+    # 250.000 TPM/minuto. Una sola analisi complessa consuma l'intera quota.
+    # Due analisi consecutive → 429 certo. La soluzione:
+    #   1. Primo tentativo immediato
+    #   2. Se 429 → aspetta 30s e riprova (la quota si rigenera parzialmente)
+    #   3. Se 429 ancora → aspetta 90s e riprova (rigenera completamente)
+    #   4. Se ancora fallisce → fallback Claude
+    RETRY_WAITS_SECONDS = [0, 30, 90]  # attese PRIMA di ogni tentativo
+    last_gemini_exc: Exception | None = None
 
-    # ── Tentativo 2: Claude fallback ──
+    for attempt, wait in enumerate(RETRY_WAITS_SECONDS):
+        if wait > 0:
+            logger.warning(
+                f"[deep_research] Quota Gemini — attesa {wait}s prima tentativo "
+                f"{attempt + 1}/{len(RETRY_WAITS_SECONDS)}"
+            )
+            time.sleep(wait)
+
+        try:
+            return _run_crew(
+                query=query,
+                properties=properties,
+                plan=plan,
+                user_id=user_id,
+                llm_type="gemini",
+                language=language,
+                task_callback=task_callback,
+            )
+        except Exception as e:
+            if should_fallback(e):
+                last_gemini_exc = e
+                logger.warning(
+                    f"[deep_research] Gemini tentativo {attempt + 1}/{len(RETRY_WAITS_SECONDS)} "
+                    f"fallito ({type(e).__name__}): {str(e)[:100]}"
+                )
+                # Continua al prossimo tentativo (se disponibile)
+            else:
+                raise  # Bug nel codice o errore non recuperabile — propaga subito
+
+    # ── Tutti i tentativi Gemini esauriti → Claude fallback ──────────────────
+    logger.warning(
+        f"[deep_research] Gemini esaurito dopo {len(RETRY_WAITS_SECONDS)} tentativi. "
+        f"Passaggio a Claude fallback."
+    )
     fallback_llm = get_fallback_llm(plan=plan)
     if fallback_llm is None:
         raise RuntimeError(
-            "Gemini non disponibile e ANTHROPIC_API_KEY non configurata. "
-            "Aggiungi ANTHROPIC_API_KEY al .env per abilitare il fallback Claude."
+            "Gemini non disponibile dopo 3 tentativi e ANTHROPIC_API_KEY non configurata. "
+            "Aggiungi ANTHROPIC_API_KEY al .env per abilitare il fallback Claude. "
+            f"Ultimo errore Gemini: {type(last_gemini_exc).__name__}: {str(last_gemini_exc)[:200]}"
         )
 
     logger.info(f"[deep_research] Avvio con Claude fallback — piano={plan}")
@@ -204,7 +230,41 @@ def run_deep_research(
     )
 
 
+def _truncate_query(query: str, max_len: int = 400) -> str:
+    """
+    Tronca la query per le description dei Task.
+    La query completa rimane nel contesto del primo task (task_market),
+    ma non serve ripeterla integralmente in ogni task successivo.
+    Risparmia 1000-3000 token per task su query lunghe.
+    """
+    if len(query) <= max_len:
+        return query
+    return query[:max_len] + "... [query completa nel task di mercato]"
+
+
 def _build_language_instruction(language: str) -> str:
+    """
+    Restituisce l'istruzione lingua da iniettare in testa a ogni task.
+    Supporta tutti i codici ISO 639-1 — il modello gestisce la traduzione.
+    """
+    lang_names = {
+        "it": "Italian",  "en": "English",   "fr": "French",
+        "de": "German",   "es": "Spanish",   "pt": "Portuguese",
+        "nl": "Dutch",    "pl": "Polish",    "ru": "Russian",
+        "zh": "Chinese",  "ja": "Japanese",  "ar": "Arabic",
+    }
+    lang_name = lang_names.get(language, "English")
+    return (
+        f"CRITICAL LANGUAGE RULE: You MUST respond EXCLUSIVELY in {lang_name} "
+        f"(language code: {language}). "
+        f"Every single word of your response must be in {lang_name}. "
+        f"Do NOT use any other language regardless of what language "
+        f"your instructions are written in. "
+        f"The user's query is in {lang_name} — match that language exactly.\n\n"
+    )
+
+
+
     """
     Restituisce l'istruzione lingua da iniettare in testa a ogni task.
     Supporta tutti i codici ISO 639-1 — il modello gestisce la traduzione.
@@ -248,10 +308,14 @@ def _run_crew(
     search_tool = get_search_tool(plan=plan, mode=search_mode)
     props_text  = _format_properties(properties)
     lang_instr  = _build_language_instruction(language)
+    # Query troncata per i task successivi al primo — evita esplosione token
+    query_short = _truncate_query(query, max_len=400)
 
     logger.info(f"[deep_research] crew LLM={llm_type}, search_mode={search_mode}, lang={language}")
 
     # ── Agenti ───────────────────────────────────────────────────────────────
+    # max_iter=6: ogni agente può fare MAX 6 tool call.
+    # Il Risk Assessor ne faceva 11 (default 25) — questo dimezza il consumo TPM.
     market_scout = Agent(
         role="Market Scout Immobiliare",
         goal=(
@@ -264,6 +328,7 @@ def _run_crew(
         tools=[search_tool] if search_tool else [],
         verbose=True,
         allow_delegation=False,
+        max_iter=6,
     )
 
     property_analyst = Agent(
@@ -278,6 +343,7 @@ def _run_crew(
         tools=[search_tool] if search_tool else [],
         verbose=True,
         allow_delegation=False,
+        max_iter=5,
     )
 
     risk_assessor = Agent(
@@ -292,6 +358,7 @@ def _run_crew(
         tools=[search_tool] if search_tool else [],
         verbose=True,
         allow_delegation=False,
+        max_iter=5,
     )
 
     investment_strategist = Agent(
@@ -304,6 +371,7 @@ def _run_crew(
         llm=llm,
         verbose=True,
         allow_delegation=False,
+        max_iter=3,  # Nessun tool, solo sintesi — 3 iterazioni di ragionamento bastano
     )
 
     # ── Determina se l'investitore ha fornito immobili specifici ─────────────
@@ -369,7 +437,7 @@ def _run_crew(
             "Based on the market data found by the Market Scout, "
             "BUILD and ANALYZE 3 typical property profiles compatible "
             "with the investor's query. Name each one (e.g. Profile A, B, C).\n\n"
-            f"INVESTOR QUERY: {query}\n\n"
+            f"INVESTOR QUERY: {query_short}\n\n"
             "For EACH profile apply exact formulas:\n"
             "1. Define: zone, purchase price, size, condition\n"
             "2. Calculate local-currency/sqm and deviation from local market (%)\n"
@@ -386,7 +454,7 @@ def _run_crew(
         props_context_risk = (
             "The investor has NOT provided specific properties.\n"
             "Analyze risks and opportunities for the 3 zones/profiles identified.\n\n"
-            f"INVESTOR QUERY: {query}\n\n"
+            f"INVESTOR QUERY: {query_short}\n\n"
             "For each zone/profile search:\n"
             "1. Eviction / vacancy data for the city or region\n"
             "2. Current short-term rental regulations for the location\n"
@@ -451,7 +519,7 @@ def _run_crew(
         description=(
             f"{lang_instr}"
             f"Sintetizza tutto in una raccomandazione finale strutturata.\n\n"
-            f"QUERY ORIGINALE: {query}\n\n"
+            f"QUERY ORIGINALE: {query_short}\n\n"
             "Produci OBBLIGATORIAMENTE:\n"
             "1. Risposta diretta alla query (1-2 frasi con numeri)\n"
             "2. Tabella comparativa con tutte le metriche per ogni immobile\n"
@@ -466,7 +534,9 @@ def _run_crew(
             "motivata, strategia con numeri, avvertenze, verdict finale."
         ),
         agent=investment_strategist,
-        context=[task_market, task_property, task_risk],
+        # Solo task_risk come contesto esplicito — task_risk già incorpora market+property.
+        # Passare tutti e 3 triplica l'input del task più costoso (è la causa del 429 al task 4).
+        context=[task_risk],
         callback=task_callback,
     )
 

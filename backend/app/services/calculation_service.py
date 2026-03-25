@@ -11,6 +11,7 @@
 #   "prima_casa"     — acquisto prima casa con valorizzazione
 
 import logging
+import time
 from typing import Optional
 
 from crewai import Agent, Task, Crew, Process
@@ -242,119 +243,67 @@ Score 0-100 weighted on:
 # ── Funzione pubblica principale ──────────────────────────────────────────────
 
 def run_compare_roi(
-    properties: list[dict],
-    investment_goal: str = "affitto_lungo",
-    plan: str = "free",
-    user_id: Optional[int] = None,
-    language: str = "it",
-    task_callback=None,
+    properties: list[dict], investment_goal: str = "affitto_lungo", plan: str = "free", user_id: Optional[int] = None, language: str = "it", task_callback=None,
 ) -> dict:
-    """
-    Calcola ROI comparativo per N immobili (max 5).
-    SPRINT 4: task_callback(task_output) opzionale per progress tracking.
-    """
-    if not properties:
-        raise ValueError("Almeno un immobile e richiesto.")
-    if len(properties) > 5:
-        properties = properties[:5]
+    if not properties: raise ValueError("Almeno un immobile e richiesto.")
+    if len(properties) > 5: properties = properties[:5]
 
-    logger.info(
-        f"[calcola_roi] START — user={user_id}, plan={plan}, "
-        f"goal={investment_goal}, lang={language}, n_properties={len(properties)}"
-    )
+    kwargs = dict(properties=properties, investment_goal=investment_goal, plan=plan, user_id=user_id, language=language, task_callback=task_callback)
 
-    kwargs = dict(
-        properties=properties,
-        investment_goal=investment_goal,
-        plan=plan,
-        user_id=user_id,
-        language=language,
-        task_callback=task_callback,
-    )
+    # Retry più rapidi
+    RETRY_WAITS_SECONDS = [0, 15, 30]
+    last_gemini_exc: Exception | None = None
 
-    try:
-        return _run_roi_crew(llm_type="gemini", **kwargs)
-    except Exception as e:
-        if should_fallback(e):
-            logger.warning(
-                f"[calcola_roi] Gemini fallito ({type(e).__name__}), "
-                f"passo a Claude. Errore: {str(e)[:120]}"
-            )
-        else:
-            raise
+    for attempt, wait in enumerate(RETRY_WAITS_SECONDS):
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return _run_roi_crew(llm_type="gemini", **kwargs)
+        except Exception as e:
+            if should_fallback(e):
+                last_gemini_exc = e
+            else:
+                raise
 
     fallback_llm = get_fallback_llm(plan=plan)
     if fallback_llm is None:
-        raise RuntimeError(
-            "Gemini non disponibile e ANTHROPIC_API_KEY non configurata."
-        )
+        raise RuntimeError("Gemini non disponibile e ANTHROPIC_API_KEY non configurata.")
 
-    logger.info(f"[calcola_roi] Avvio con Claude fallback — piano={plan}")
     return _run_roi_crew(llm_type="claude", forced_llm=fallback_llm, **kwargs)
 
-
-# ── Crew interno ──────────────────────────────────────────────────────────────
-
-def _run_roi_crew(
-    properties: list[dict],
-    investment_goal: str,
-    plan: str,
-    user_id: Optional[int],
-    llm_type: str,
-    forced_llm=None,
-    language: str = "it",
-    task_callback=None,
-) -> dict:
-    llm         = forced_llm or get_llm(plan=plan)
+def _run_roi_crew(properties: list[dict], investment_goal: str, plan: str, user_id: Optional[int], llm_type: str, forced_llm=None, language: str = "it", task_callback=None) -> dict:
+    llm = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)
     search_tool = get_search_tool(plan=plan, mode=search_mode)
 
-    goal_info    = _GOAL_CONTEXT.get(investment_goal, _GOAL_CONTEXT["affitto_lungo"])
-    goal_label   = goal_info["label"]
-    goal_horizon = goal_info["horizon"]
-    goal_fin_inst = goal_info["financial_instructions"]
-    props_text   = _format_properties(properties)
-    lang_instr   = _build_lang_instruction(language)
+    goal_info = _GOAL_CONTEXT.get(investment_goal, _GOAL_CONTEXT["affitto_lungo"])
+    goal_label, goal_horizon, goal_fin_inst = goal_info["label"], goal_info["horizon"], goal_info["financial_instructions"]
+    props_text = _format_properties(properties)
+    lang_instr = _build_lang_instruction(language)
 
-    # ── Agenti ───────────────────────────────────────────────────────────────
+    # ── AGENTI A DIETA ──
     property_valuator = Agent(
         role="Property Valuator",
-        goal=(
-            "Trovare prezzi reali di vendita e affitto per ogni zona. "
-            "Valutare il prezzo richiesto vs mercato locale. "
-            "Stimare valori post-ristrutturazione dove necessario."
-        ),
+        goal="Trovare prezzi reali di vendita e affitto. Sii rapido e non fare ricerche inutili.",
         backstory=_TEMPLATE_PROPERTY_VALUATOR,
-        llm=llm,
-        tools=[search_tool] if search_tool else [],
-        verbose=True,
-        allow_delegation=False,
+        llm=llm, tools=[search_tool] if search_tool else [], verbose=True, allow_delegation=False,
+        max_iter=3, # ERA 6
     )
 
     financial_analyst = Agent(
         role="Financial Analyst Immobiliare",
-        goal=(
-            f"Calcolare metriche finanziarie per ogni immobile "
-            f"in ottica '{goal_label}'. "
-            "Produrre numeri precisi e score 0-100 per ogni immobile."
-        ),
+        goal=f"Calcolare metriche finanziarie per '{goal_label}'.",
         backstory=_TEMPLATE_FINANCIAL_ANALYST,
-        llm=llm,
-        tools=[search_tool] if search_tool else [],
-        verbose=True,
-        allow_delegation=False,
+        llm=llm, tools=[search_tool] if search_tool else [], verbose=True, allow_delegation=False,
+        max_iter=3, # ERA 4
     )
 
     comparator = Agent(
         role="Investment Comparator",
-        goal=(
-            "Confrontare tutti gli immobili, classificarli e "
-            "raccomandare la scelta ottimale con numeri."
-        ),
+        goal="Confrontare tutti gli immobili e raccomandare la scelta ottimale.",
         backstory=_TEMPLATE_COMPARATOR,
-        llm=llm,
-        verbose=True,
-        allow_delegation=False,
+        llm=llm, verbose=True, allow_delegation=False,
+        max_iter=2, # ERA 3
     )
 
     # ── Task ─────────────────────────────────────────────────────────────────

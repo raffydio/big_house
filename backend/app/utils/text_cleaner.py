@@ -49,15 +49,31 @@ def clean_agent_output(text: str) -> str:
     # 3. Intestazioni: # Titolo → Titolo
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
 
-    # 4. Tabelle markdown
-    # Rimuove le righe separatore (| --- | --- |)
+    # 4. Tabelle markdown — gestisce ENTRAMBI i formati:
+    #    Formato A (con pipe ai bordi):   | col1 | col2 |
+    #    Formato B (senza pipe ai bordi): col1 | col2 | col3
+    #    Separatori tipo: ---|---|--- oppure :---|:---:|---:
+
+    # 4a. Righe separatore CON pipe ai bordi: | --- | --- |
     text = re.sub(r'^\|[\s\-\|:]+\|$', '', text, flags=re.MULTILINE)
-    # Righe di tabella (| col1 | col2 |) → "col1 - col2"
+
+    # 4b. Righe separatore SENZA pipe ai bordi: ---|---|--- o :---|:---
+    text = re.sub(r'^[\s\-\|:]+$', '', text, flags=re.MULTILINE)
+
+    # 4c. Righe di tabella CON pipe ai bordi: | col1 | col2 | → "col1 - col2"
     def format_table_row(match):
         row = match.group(0)
         cells = [cell.strip() for cell in row.split('|') if cell.strip()]
-        return ' - '.join(cells)
+        return ' - '.join(cells) if cells else ''
     text = re.sub(r'^\|.+\|$', format_table_row, text, flags=re.MULTILINE)
+
+    # 4d. Righe di tabella SENZA pipe ai bordi: col1 | col2 | col3 → "col1 - col2 - col3"
+    # Solo se la riga contiene almeno un | e non è già stata processata
+    def format_pipeless_row(match):
+        row = match.group(0)
+        cells = [cell.strip() for cell in row.split('|') if cell.strip()]
+        return ' - '.join(cells) if len(cells) >= 2 else row
+    text = re.sub(r'^[^\|#\-\*\d\n].+\|.+$', format_pipeless_row, text, flags=re.MULTILINE)
 
     # 5. Separatori orizzontali: --- oppure *** oppure ___
     text = re.sub(r'^[-\*_]{3,}\s*$', '', text, flags=re.MULTILINE)

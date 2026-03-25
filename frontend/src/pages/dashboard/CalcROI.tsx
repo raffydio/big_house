@@ -1,4 +1,4 @@
-// src/pages/dashboard/CalcROI.tsx v3 (Async Celery + Redis)
+// src/pages/dashboard/CalcROI.tsx v5 (Async + Plain Text Output Fix)
 import React, { useState, useRef, useEffect } from 'react';
 import type { Lang, ChatMessage, ChatSession } from '../../types';
 import { useApi } from '../../hooks/useApi';
@@ -24,40 +24,17 @@ interface PropertyInput {
   notes?: string;
 }
 
-interface RenovationScenario {
-  name: string;
-  renovation_cost: number;
-  duration_months: number;
-  estimated_value_after: number;
-  estimated_rent_after: number;
-  roi_percent: number;
-  payback_years: number;
-  risk_level: string;
-  description: string;
-}
-
-interface PropertyROIResult {
-  label: string;
-  address: string;
-  purchase_price: number;
-  price_per_sqm: number;
-  scenarios: RenovationScenario[];
-  best_scenario: string;
-  total_investment_mid: number;
-  net_roi_mid: number;
-  payback_mid: number;
-  risk_summary: string;
-  rank: number;
-}
-
+// NUOVA STRUTTURA RISULTATO (Allineata al backend testo puro)
 interface CompareROIResponse {
-  results: PropertyROIResult[];
-  winner_label: string;
-  winner_reason: string;
-  comparison_summary: string;
-  market_notes: string;
-  disclaimer: string;
+  summary: string;
+  investment_goal: string;
+  investment_goal_label: string;
+  properties_count: number;
+  market_analysis: string;
+  financial_analysis: string;
+  recommended_scenario: string;
   remaining_usage: number;
+  llm_used: string;
 }
 
 interface JobInitResponse {
@@ -95,18 +72,17 @@ const CONDITION_OPTIONS = [
   { value: 'ottimo stato', label: 'Ottimo stato' }, { value: 'buono stato', label: 'Buono stato' }, { value: 'da rinnovare', label: 'Da rinnovare' }, { value: 'da ristrutturare', label: 'Da ristrutturare' },
 ];
 
-const fmt = (n: number) => n.toLocaleString('it-IT', { maximumFractionDigits: 0 });
-const fmtPct = (n: number) => `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+// Funzioni di formattazione sicure (non crashano se n è undefined)
+const fmt = (n?: number | null) => (n || 0).toLocaleString('it-IT', { maximumFractionDigits: 0 });
+const fmtPct = (n?: number | null) => `${(n || 0) > 0 ? '+' : ''}${(n || 0).toFixed(1)}%`;
 
 function buildResultText(r: CompareROIResponse): string {
-  const lines = [
-    `🏆 VINCITORE: ${r.winner_label}`, r.winner_reason, '', '── CONFRONTO IMMOBILI ──',
-    ...(r.results || []).map((res) =>
-      `#${res.rank} ${res.label} — ${res.address}\nPrezzo: €${fmt(res.purchase_price)} | €${fmt(res.price_per_sqm)}/mq\nROI medio: ${fmtPct(res.net_roi_mid)} | Payback: ${res.payback_mid.toFixed(1)} anni\nInvestimento totale: €${fmt(res.total_investment_mid)}\nScenario consigliato: ${res.best_scenario}\nRischi: ${res.risk_summary}`
-    ),
-    '', r.comparison_summary, '', r.market_notes, '', r.disclaimer,
-  ];
-  return lines.join('\n');
+  return [
+    '── SINTESI ──', r.summary, '',
+    '── ANALISI DI MERCATO ──', r.market_analysis, '',
+    '── ANALISI FINANZIARIA ──', r.financial_analysis, '',
+    '── RACCOMANDAZIONE FINALE ──', r.recommended_scenario,
+  ].filter(Boolean).join('\n');
 }
 
 export const CalcROIPage: React.FC<CalcROIProps> = ({
@@ -181,7 +157,7 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
           setLocalError(data.error || "Errore durante il calcolo del ROI.");
         }
       } catch (err) { console.error("Polling error", err); }
-    }, 2500);
+    }, 5000);
   };
 
   const handleSubmit = async () => {
@@ -207,10 +183,10 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
   const handleDownloadDocx = async () => {
     if (!lastResult) return;
     await generateDocx('Calcola ROI — Confronto Immobili', [
-      { heading: 'Vincitore', content: `${lastResult.winner_label}\n${lastResult.winner_reason}` },
-      { heading: 'Confronto', content: lastResult.comparison_summary },
-      { heading: 'Note di Mercato', content: lastResult.market_notes },
-      { heading: 'Disclaimer', content: lastResult.disclaimer },
+      { heading: 'Sintesi', content: lastResult.summary },
+      { heading: 'Analisi di Mercato', content: lastResult.market_analysis },
+      { heading: 'Analisi Finanziaria', content: lastResult.financial_analysis },
+      { heading: 'Raccomandazione Finale', content: lastResult.recommended_scenario },
     ]);
   };
   
@@ -253,8 +229,7 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
         </div>
       )}
 
-      {lastResult && !isPolling && <ComparisonTable result={lastResult} />}
-
+      {/* Blocco Azioni post-analisi */}
       {lastResult && !isPolling && (
         <div style={{ marginTop: 24, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button variant="primary" size="lg" onClick={handleNewAnalysis}>Nuova Analisi</Button>
@@ -262,6 +237,7 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
         </div>
       )}
 
+      {/* ── INPUT FORM (scompare dopo l'analisi) ── */}
       {!lastResult && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card>
@@ -322,49 +298,6 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-const ComparisonTable: React.FC<{ result: CompareROIResponse }> = ({ result }) => {
-  const [activeScenario, setActiveScenario] = useState<'Conservativo' | 'Medio' | 'Premium'>('Medio');
-  return (
-    <div style={{ marginBottom: 28 }}>
-      <div style={{ padding: '14px 20px', background: 'linear-gradient(135deg, var(--c-navy), var(--c-navy-light))', borderRadius: 'var(--r-lg)', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{ fontSize: 24 }}>🏆</span>
-        <div>
-          <p style={{ color: 'var(--c-gold)', fontWeight: 700, fontSize: '0.82rem', marginBottom: 2 }}>Immobile Consigliato</p>
-          <p style={{ color: '#fff', fontWeight: 700, fontSize: '1rem' }}>{result.winner_label}</p>
-          <p style={{ color: 'rgba(255,255,255,.65)', fontSize: '0.78rem', marginTop: 2 }}>{result.winner_reason}</p>
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-        {(['Conservativo', 'Medio', 'Premium'] as const).map((sc) => (
-          <button key={sc} onClick={() => setActiveScenario(sc)} style={{ padding: '6px 14px', borderRadius: 'var(--r-full)', border: `1.5px solid ${activeScenario === sc ? 'var(--c-blue)' : 'var(--border)'}`, background: activeScenario === sc ? 'rgba(37,99,235,.08)' : 'var(--bg-white)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: activeScenario === sc ? 700 : 400, color: activeScenario === sc ? 'var(--c-blue)' : 'var(--text-muted)', fontFamily: 'var(--font-body)' }}>{sc}</button>
-        ))}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(result.results?.length || 1, 3)}, 1fr)`, gap: 12, overflowX: 'auto' }}>
-        {(result.results || []).map((res) => {
-          const sc = res.scenarios?.find(s => s.name === activeScenario) || res.scenarios?.[1] || res.scenarios?.[0];
-          const isWinner = res.label === result.winner_label;
-          const roiColor = (sc?.roi_percent || 0) > 0 ? '#10b981' : 'var(--c-red)';
-          return (
-            <div key={res.label} style={{ padding: 16, background: isWinner ? 'linear-gradient(135deg, rgba(26,58,110,.05), rgba(37,99,235,.05))' : 'var(--bg-white)', border: `${isWinner ? '2' : '1'}px solid ${isWinner ? 'var(--c-blue)' : 'var(--border)'}`, borderRadius: 'var(--r-lg)', boxShadow: 'var(--shadow-sm)', position: 'relative' }}>
-              {isWinner && <div style={{ position: 'absolute', top: -8, right: 12, background: 'var(--c-blue)', color: '#fff', padding: '1px 10px', borderRadius: 'var(--r-full)', fontSize: '0.62rem', fontWeight: 700 }}>🥇 #1</div>}
-              <div style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-muted)', marginBottom: 4 }}>#{res.rank}</div>
-              <p style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-navy)', marginBottom: 2, lineHeight: 1.3 }}>{res.label}</p>
-              <p style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginBottom: 12 }}>{res.address}</p>
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: '2rem', fontWeight: 700, color: roiColor, marginBottom: 10 }}>{fmtPct(sc?.roi_percent || 0)}</div>
-              {[
-                ['Prezzo acquisto', `€${fmt(res.purchase_price)}`], ['€/mq', `€${fmt(res.price_per_sqm)}`], ['Costo rinnovo', `€${fmt(sc?.renovation_cost || 0)}`], ['Valore post', `€${fmt(sc?.estimated_value_after || 0)}`], ['Affitto/mese', `€${fmt(sc?.estimated_rent_after || 0)}`], ['Payback', `${(sc?.payback_years || 0).toFixed(1)} anni`], ['Rischio', sc?.risk_level || '—'],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', marginBottom: 4, borderBottom: '1px solid var(--border)', paddingBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>{k}</span><span style={{ fontWeight: 600, color: 'var(--text-navy)' }}>{v}</span></div>
-              ))}
-              <p style={{ fontSize: '0.71rem', color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>{res.risk_summary}</p>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 };

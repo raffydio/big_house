@@ -126,7 +126,7 @@ PLAN_LIMITS = {
 
 class DeepResearchRequest(BaseModel):
     query: str = Field(
-        ..., min_length=10, max_length=2000,
+        ..., min_length=10, max_length=5000,
         description="Descrizione libera: zona, budget, obiettivo, preferenze",
     )
     # SPRINT 3 — lingua risposta agenti

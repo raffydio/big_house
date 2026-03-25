@@ -50,7 +50,7 @@ services:
     startCommand: >
       celery -A app.worker worker
       -Q q_plus,q_pro,q_basic,q_free
-      --concurrency=2
+      --concurrency=1
       --prefetch-multiplier=1
       --loglevel=info
       --max-tasks-per-child=50

@@ -157,7 +157,7 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
       } catch (err) {
         console.error("Polling error", err);
       }
-    }, 2500);
+    }, 5000); // <--- FIX: Modificato da 2500 a 5000 ms
   };
 
   const handleSubmit = async () => {

@@ -3,45 +3,32 @@ agents/search_tool.py
 
 Tool di ricerca web per gli agenti CrewAI di Big House AI.
 Riscritto con il nuovo SDK google.genai (GA, maggio 2025).
-Rimosso google.generativeai (deprecato novembre 2025).
 
 CASCATA SEARCH — due modalità in base all'LLM attivo:
-
-    Modalità GEMINI (default):
-        1. Google Search Tool nativo (google.genai grounding)
-        2. DuckDuckGo (fallback gratuito)
-        3. Brave Search API (fallback finale)
-
-    Modalità CLAUDE (attivata da llm_factory quando Gemini fallisce):
-        1. DuckDuckGo (primario)
-        2. Brave Search API (fallback)
-
-    Se tutti i provider falliscono → SearchExhaustedError (non blocca il crew,
-    gli agenti continuano con la conoscenza di training del modello).
+    Modalità GEMINI: Google Search -> DuckDuckGo -> Brave
+    Modalità CLAUDE: DuckDuckGo -> Brave
 """
 
 import os
 import logging
 from typing import Optional
 
-from crewai.tools import tool   # ← corretto per CrewAI 1.10.x
+from crewai.tools import tool
 
 logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────────
-# Eccezione custom
-# ─────────────────────────────────────────────
 
 class SearchExhaustedError(Exception):
     """Tutti i provider di ricerca hanno fallito."""
     pass
 
+# Helper per tagliare i token in eccesso
+def _truncate_text(text: str, max_length: int = 1500) -> str:
+    if not text: return ""
+    return text[:max_length] + "\n...[TESTO TRONCATO PER LIMITI DI SPAZIO]" if len(text) > max_length else text
 
 # ─────────────────────────────────────────────
 # Provider 1 — Google Search Tool nativo
 # ─────────────────────────────────────────────
-
 def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
     from google import genai
     from google.genai import types
@@ -50,12 +37,13 @@ def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
     config = types.GenerateContentConfig(tools=[grounding_tool])
 
+    # Chiediamo esplicitamente a Gemini di essere conciso per risparmiare token
     response = client.models.generate_content(
         model=model,
         contents=(
             f"Cerca informazioni aggiornate su: {query}. "
-            f"Fornisci dati numerici specifici se disponibili "
-            f"(prezzi €/mq, rendimenti, trend di mercato)."
+            f"Fornisci dati numerici specifici se disponibili (prezzi €/mq, rendimenti, trend). "
+            f"SII ESTREMAMENTE CONCISO. Riassumi i dati chiave in massimo 1500 caratteri."
         ),
         config=config,
     )
@@ -64,14 +52,12 @@ def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
         raise ValueError("Google Search ha restituito risposta vuota")
 
     logger.info(f"[search_tool] Google Search OK — query: {query[:50]}...")
-    return response.text
-
+    return _truncate_text(response.text, 2000)
 
 # ─────────────────────────────────────────────
 # Provider 2 — DuckDuckGo
 # ─────────────────────────────────────────────
-
-def _search_duckduckgo(query: str, max_results: int = 5) -> str:
+def _search_duckduckgo(query: str, max_results: int = 3) -> str: # Ridotto da 5 a 3
     from duckduckgo_search import DDGS
 
     with DDGS() as ddgs:
@@ -82,17 +68,17 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> str:
 
     formatted = []
     for i, r in enumerate(results, 1):
-        formatted.append(f"{i}. {r.get('title','')}\n{r.get('body','')}\nFonte: {r.get('href','')}")
+        # Tronchiamo il body del singolo risultato a 400 caratteri
+        body = r.get('body','')[:400] + "..."
+        formatted.append(f"{i}. {r.get('title','')}\n{body}\nFonte: {r.get('href','')}")
 
     logger.info(f"[search_tool] DuckDuckGo OK — {len(results)} risultati per: {query[:50]}...")
-    return "\n\n".join(formatted)
-
+    return _truncate_text("\n\n".join(formatted), 1500)
 
 # ─────────────────────────────────────────────
 # Provider 3 — Brave Search API
 # ─────────────────────────────────────────────
-
-def _search_brave(query: str, count: int = 5) -> str:
+def _search_brave(query: str, count: int = 3) -> str: # Ridotto da 5 a 3
     import requests
 
     api_key = os.getenv("BRAVE_SEARCH_API_KEY")
@@ -114,26 +100,16 @@ def _search_brave(query: str, count: int = 5) -> str:
 
     formatted = []
     for i, r in enumerate(web_results, 1):
-        formatted.append(f"{i}. {r.get('title','')}\n{r.get('description','')}\nFonte: {r.get('url','')}")
+        desc = r.get('description','')[:400] + "..."
+        formatted.append(f"{i}. {r.get('title','')}\n{desc}\nFonte: {r.get('url','')}")
 
     logger.info(f"[search_tool] Brave Search OK — {len(web_results)} risultati per: {query[:50]}...")
-    return "\n\n".join(formatted)
-
+    return _truncate_text("\n\n".join(formatted), 1500)
 
 # ─────────────────────────────────────────────
 # Funzione principale — Cascata search
 # ─────────────────────────────────────────────
-
-def get_search_results(
-    query: str,
-    mode: str = "gemini",
-    gemini_model: Optional[str] = None,
-) -> str:
-    """
-    Esegue la ricerca web con cascata di fallback.
-    Modalità GEMINI:  Google Search → DuckDuckGo → Brave
-    Modalità CLAUDE:  DuckDuckGo → Brave
-    """
+def get_search_results(query: str, mode: str = "gemini", gemini_model: Optional[str] = None) -> str:
     model = gemini_model or os.getenv("GEMINI_MODEL_OVERRIDE", "gemini/gemini-2.5-flash")
     model_name = model.replace("gemini/", "")
     providers_tried = []
@@ -157,72 +133,27 @@ def get_search_results(
         providers_tried.append(f"Brave Search: {type(e).__name__} — {str(e)[:80]}")
         logger.error("[search_tool] Brave Search fallito. Tutti i provider esauriti.")
 
-    raise SearchExhaustedError(
-        f"Tutti i provider di ricerca hanno fallito per la query '{query[:50]}': {' | '.join(providers_tried)}"
-    )
-
+    raise SearchExhaustedError(f"Tutti i provider hanno fallito: {' | '.join(providers_tried)}")
 
 # ─────────────────────────────────────────────
-# get_search_tool() — compatibilità con i service
-# Richiesta da deep_research_service.py e calculation_service.py
+# Factory e Tools
 # ─────────────────────────────────────────────
-
 def get_search_tool(plan: str = "free", mode: str = "gemini"):
-    """
-    Factory function richiesta dai service.
-    Restituisce il tool CrewAI appropriato in base alla modalità LLM.
-
-    Args:
-        plan: Piano utente (reserved per futura logica)
-        mode: "gemini" oppure "claude"
-
-    Returns:
-        Tool CrewAI da passare agli agenti
-    """
-    if mode == "claude":
-        return ricerca_immobiliare_claude
+    if mode == "claude": return ricerca_immobiliare_claude
     return ricerca_immobiliare
-
-
-# ─────────────────────────────────────────────
-# CrewAI Tool — Modalità GEMINI
-# ─────────────────────────────────────────────
 
 @tool("Ricerca Immobiliare Web")
 def ricerca_immobiliare(query: str) -> str:
-    """
-    Cerca informazioni aggiornate sul mercato immobiliare italiano.
-    Usa Google Search con fallback su DuckDuckGo e Brave Search.
-    Fornisce prezzi euro/mq, rendimenti, trend di zona, dati catastali.
-    """
+    """Cerca info sul mercato immobiliare. Usa query brevi e mirate. Non cercare più di 2 volte la stessa cosa."""
     try:
         return get_search_results(query, mode="gemini")
     except SearchExhaustedError as e:
-        logger.error(f"[ricerca_immobiliare] SearchExhaustedError: {e}")
-        return (
-            "ATTENZIONE: La ricerca web non è disponibile al momento. "
-            "Procedi con i dati di training del modello e segnala "
-            "nell'output che i dati potrebbero non essere aggiornati."
-        )
-
-
-# ─────────────────────────────────────────────
-# CrewAI Tool — Modalità CLAUDE
-# ─────────────────────────────────────────────
+        return "ATTENZIONE: Ricerca web non disponibile. Usa i tuoi dati di training."
 
 @tool("Ricerca Immobiliare Web Claude")
 def ricerca_immobiliare_claude(query: str) -> str:
-    """
-    Cerca informazioni aggiornate sul mercato immobiliare italiano.
-    Usa DuckDuckGo con fallback su Brave Search.
-    Versione per agenti Claude, senza Google Search nativo.
-    """
+    """Cerca info sul mercato immobiliare. Usa query brevi e mirate. Non cercare più di 2 volte la stessa cosa."""
     try:
         return get_search_results(query, mode="claude")
     except SearchExhaustedError as e:
-        logger.error(f"[ricerca_immobiliare_claude] SearchExhaustedError: {e}")
-        return (
-            "ATTENZIONE: La ricerca web non è disponibile al momento. "
-            "Procedi con i dati di training del modello e segnala "
-            "nell'output che i dati potrebbero non essere aggiornati."
-        )
+        return "ATTENZIONE: Ricerca web non disponibile. Usa i tuoi dati di training."

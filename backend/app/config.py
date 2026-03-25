@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     #   gemini/gemini-2.5-flash-lite  → più economico, veloce (DEFAULT)
     #   gemini/gemini-2.5-flash       → qualità superiore
     #   gemini/gemini-2.5-pro         → massima qualità (più costoso)
-    GEMINI_MODEL: str = "gemini/gemini-1.5-pro"
+    GEMINI_MODEL: str = "gemini/gemini-2.5-pro"
 
     # ── Google OAuth ──
     GOOGLE_CLIENT_ID: Optional[str] = None

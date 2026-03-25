@@ -77,7 +77,34 @@ def run_deep_research_task(
             task_callback=on_task_done,
         )
 
-        mark_completed(job_id, result)
+        # ── Mappa i campi del service ai campi attesi dal frontend ────────────
+        # Il router nel flusso sincrono fa questa mappatura in features.py.
+        # Nel flusso asincrono il task deve farla prima di salvare in Redis.
+        summary = result.get("summary", "")
+        market  = result.get("market_overview", "")
+        rec     = result.get("investment_recommendation", "")
+
+        mapped_result = {
+            # Campi che il frontend legge (struttura DeepResearchResponse)
+            "market_context":           market or summary,
+            "best_pick":                rec,
+            "market_trend":             market,
+            "action_plan":              rec,
+            "opportunities":            [],
+            "disclaimer": (
+                "I risultati generati dall'AI hanno finalità esclusivamente "
+                "informativa e non costituiscono consulenza finanziaria o immobiliare."
+            ),
+            # Campi raw completi (per eventuale uso futuro)
+            "summary":                   summary,
+            "market_overview":           market,
+            "investment_recommendation": rec,
+            "risks_opportunities":       result.get("risks_opportunities", ""),
+            "properties_analysis":       result.get("properties_analysis", []),
+            "llm_used":                  result.get("llm_used", "gemini"),
+        }
+
+        mark_completed(job_id, mapped_result)
         logger.info(f"[task:deep_research] DONE — job={job_id}")
         return result
 
@@ -137,7 +164,36 @@ def run_calcola_roi_task(
             task_callback=on_task_done,
         )
 
-        mark_completed(job_id, result)
+        # ── Mappa i campi del service ai campi attesi dal frontend ────────────
+        # Stessa logica del router sincrono in features.py → _extract_winner
+        recommendation = result.get("recommended_scenario", "")
+        market         = result.get("market_analysis", "")
+        summary        = result.get("summary", "")
+
+        # Estrai il nome del vincitore dal testo della raccomandazione
+        winner_label = _extract_winner_from_text(recommendation, properties)
+
+        mapped_result = {
+            # Campi che il frontend legge (struttura CompareROIResponse)
+            "winner_label":       winner_label,
+            "winner_reason":      summary,
+            "comparison_summary": recommendation,
+            "market_notes":       market,
+            "results":            result.get("scenarios", []),
+            "disclaimer": (
+                "I risultati generati dall'AI hanno finalità esclusivamente "
+                "informativa e non costituiscono consulenza finanziaria o immobiliare."
+            ),
+            "remaining_usage": None,
+            # Campi raw completi
+            "summary":              summary,
+            "market_analysis":      market,
+            "financial_analysis":   result.get("financial_analysis", ""),
+            "recommended_scenario": recommendation,
+            "llm_used":             result.get("llm_used", "gemini"),
+        }
+
+        mark_completed(job_id, mapped_result)
         logger.info(f"[task:calcola_roi] DONE — job={job_id}")
         return result
 
@@ -146,3 +202,32 @@ def run_calcola_roi_task(
         mark_failed(job_id, error_msg)
         logger.error(f"[task:calcola_roi] FAILED — job={job_id}: {error_msg}")
         raise
+
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+def _extract_winner_from_text(recommendation_text: str, properties: list) -> str:
+    """
+    Estrae il nome dell'immobile vincitore dal testo della raccomandazione.
+    Replica la logica di _extract_winner() in features.py per il flusso asincrono.
+    """
+    if not recommendation_text or not properties:
+        return properties[0].get("name", "Immobile 1") if properties else "Immobile 1"
+
+    text_lower = recommendation_text.lower()
+    keywords = [
+        "consigliato", "migliore", "compra", "primo classificato",
+        "vincitore", "recommended", "best", "buy", "winner", "rank 1",
+    ]
+
+    for kw in keywords:
+        pos = text_lower.find(kw)
+        if pos == -1:
+            continue
+        window = recommendation_text[max(0, pos - 100): pos + 150]
+        for prop in properties:
+            name = prop.get("name", "")
+            if name and name.lower() in window.lower():
+                return name
+
+    # Fallback: restituisce il primo immobile
+    return properties[0].get("name", "Immobile 1")

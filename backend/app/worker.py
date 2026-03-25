@@ -57,9 +57,11 @@ celery_app.conf.update(
     task_acks_late=True,               # ACK solo dopo completamento (sicurezza)
     worker_max_tasks_per_child=50,     # restart worker ogni 50 task (memory safety)
 
-    # Timeout hard su singolo task: 10 minuti (le analisi durano 3-5 min)
-    task_soft_time_limit=540,          # 9 min → SoftTimeLimitExceeded
-    task_time_limit=600,               # 10 min → forza kill
+    # Timeout hard su singolo task: 16 minuti
+    # Le analisi complesse con query lunghe e 4 agenti possono durare 10-13 min.
+    # 9/10 min era troppo stretto — causava SIGKILL al Risk Assessor.
+    task_soft_time_limit=900,          # 15 min → SoftTimeLimitExceeded
+    task_time_limit=960,               # 16 min → forza kill
 
     # Code di priorità (order matters: Celery checks in this order)
     task_queues={
