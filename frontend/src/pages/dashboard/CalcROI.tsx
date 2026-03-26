@@ -1,4 +1,4 @@
-// src/pages/dashboard/CalcROI.tsx v5 (Async + Plain Text Output Fix)
+// src/pages/dashboard/CalcROI.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import type { Lang, ChatMessage, ChatSession } from '../../types';
 import { useApi } from '../../hooks/useApi';
@@ -24,7 +24,6 @@ interface PropertyInput {
   notes?: string;
 }
 
-// NUOVA STRUTTURA RISULTATO (Allineata al backend testo puro)
 interface CompareROIResponse {
   summary: string;
   investment_goal: string;
@@ -47,6 +46,7 @@ interface JobInitResponse {
 interface CompareROIRequest {
   properties: PropertyInput[];
   goal: string;
+  language: string;
 }
 
 interface CalcROIProps {
@@ -72,16 +72,14 @@ const CONDITION_OPTIONS = [
   { value: 'ottimo stato', label: 'Ottimo stato' }, { value: 'buono stato', label: 'Buono stato' }, { value: 'da rinnovare', label: 'Da rinnovare' }, { value: 'da ristrutturare', label: 'Da ristrutturare' },
 ];
 
-// Funzioni di formattazione sicure (non crashano se n è undefined)
-const fmt = (n?: number | null) => (n || 0).toLocaleString('it-IT', { maximumFractionDigits: 0 });
-const fmtPct = (n?: number | null) => `${(n || 0) > 0 ? '+' : ''}${(n || 0).toFixed(1)}%`;
-
-function buildResultText(r: CompareROIResponse): string {
+// Funzione blindata anti-crash
+function buildResultText(r: CompareROIResponse | null | undefined): string {
+  if (!r) return 'Nessun risultato disponibile.';
   return [
-    '── SINTESI ──', r.summary, '',
-    '── ANALISI DI MERCATO ──', r.market_analysis, '',
-    '── ANALISI FINANZIARIA ──', r.financial_analysis, '',
-    '── RACCOMANDAZIONE FINALE ──', r.recommended_scenario,
+    '── SINTESI ──', r.summary || '', '',
+    '── ANALISI DI MERCATO ──', r.market_analysis || '', '',
+    '── ANALISI FINANZIARIA ──', r.financial_analysis || '', '',
+    '── RACCOMANDAZIONE FINALE ──', r.recommended_scenario || '',
   ].filter(Boolean).join('\n');
 }
 
@@ -143,10 +141,12 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
         if (data.status === 'completed') {
           clearInterval(interval);
           setIsPolling(false);
-          setLastResult(data.result);
+          
+          const resultData = data.result || {};
+          setLastResult(resultData);
           onUsageIncrement();
           
-          const text = buildResultText(data.result);
+          const text = buildResultText(resultData);
           const docxName = user?.plan !== 'free' ? `calc_${Date.now()}.docx` : undefined;
           const aiMsg = addMsg({ role: 'assistant', content: text, feature: 'calcola', docx_filename: docxName });
           
@@ -168,7 +168,8 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
     const label = properties.length === 1 ? `ROI: ${properties[0].label}` : `Confronto ${properties.length} immobili`;
     const userMsg = addMsg({ role: 'user', content: label, feature: 'calcola' });
 
-    const initResult = await call({ properties, goal });
+    // Aggiunto il parametro language
+    const initResult = await call({ properties, goal, language: lang });
 
     if (!initResult) {
       if (error === 'errorLimit' || (error && error.includes('429'))) onLimitReached();
@@ -183,10 +184,10 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
   const handleDownloadDocx = async () => {
     if (!lastResult) return;
     await generateDocx('Calcola ROI — Confronto Immobili', [
-      { heading: 'Sintesi', content: lastResult.summary },
-      { heading: 'Analisi di Mercato', content: lastResult.market_analysis },
-      { heading: 'Analisi Finanziaria', content: lastResult.financial_analysis },
-      { heading: 'Raccomandazione Finale', content: lastResult.recommended_scenario },
+      { heading: 'Sintesi', content: lastResult.summary || 'N/A' },
+      { heading: 'Analisi di Mercato', content: lastResult.market_analysis || 'N/A' },
+      { heading: 'Analisi Finanziaria', content: lastResult.financial_analysis || 'N/A' },
+      { heading: 'Raccomandazione Finale', content: lastResult.recommended_scenario || 'N/A' },
     ]);
   };
   
@@ -204,7 +205,7 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
     <div style={{ padding: 'clamp(16px, 4vw, 32px)', maxWidth: 960, margin: '0 auto' }}>
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.4rem, 3vw, 2rem)', color: 'var(--text-navy)', marginBottom: 6 }}>Calcola ROI — Confronto Immobili</h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Inserisci fino a 5 immobili già trovati — gli agenti calcolano e confrontano i ROI affiancati</p>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Inserisci fino a 5 immobili già trovati — il sistema calcolerà e confronterà i ROI affiancati</p>
       </div>
 
       {messages.length > 0 && (
@@ -292,7 +293,7 @@ export const CalcROIPage: React.FC<CalcROIProps> = ({
 
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <Button variant="primary" size="lg" onClick={handleSubmit} loading={loading || isPolling} disabled={!isValid || loading || isPolling}>
-              {loading || isPolling ? 'Agenti in calcolo...' : properties.length > 1 ? `Confronta ${properties.length} Immobili →` : 'Calcola ROI →'}
+              {loading || isPolling ? 'Calcolo in corso...' : properties.length > 1 ? `Confronta ${properties.length} Immobili →` : 'Calcola ROI →'}
             </Button>
             {!isValid && <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>⚠️ Completa indirizzo, prezzo e superficie per ogni immobile</span>}
           </div>

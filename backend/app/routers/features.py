@@ -1,29 +1,27 @@
 """
 routers/features.py
-SPRINT 4 — Dispatch asincrono via Celery + Redis.
+SPRINT 5 — Dispatch asincrono via Celery + Redis.
+Aggiornato per la nuova Pipeline Deterministica (market_analysis_service.py).
 
 Comportamento:
     - Se Redis è disponibile (REDIS_URL configurata):
         POST /features/deep-research → ritorna {job_id, status: "queued"} subito
         Il frontend fa polling su GET /jobs/{job_id}
     - Se Redis NON è disponibile (dev locale senza Redis):
-        Fallback automatico all'esecuzione sincrona (comportamento Sprint 3)
-        Utile per sviluppo locale senza dover avviare Redis + Celery
-
-Priority queue per piano:
-    PLUS  → q_plus   (prima servita)
-    PRO   → q_pro
-    BASIC → q_basic
-    FREE  → q_free   (ultima servita)
+        Fallback automatico: simula il comportamento asincrono restituendo
+        un finto job_id e salvando il risultato in memoria, così il frontend
+        non crasha.
 """
 import asyncio
 import logging
+import uuid
+import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.security import get_current_user, check_limit
 from app.core.database import increment_usage
-from app.core.job_store import create_job, _redis_available
-from app.services.deep_research_service import run_deep_research
+from app.core.job_store import create_job, _redis_available, _fallback_store
+from app.services.market_analysis_service import run_market_analysis
 from app.services.calculation_service import run_compare_roi
 from app.models import (
     DeepResearchRequest, DeepResearchResponse,
@@ -100,9 +98,8 @@ async def deep_research(
     )
     try:
         result: dict = await asyncio.to_thread(
-            run_deep_research,
+            run_market_analysis,
             query=payload.query,
-            properties=[],
             plan=plan,
             user_id=current_user.get("id"),
             language=language,
@@ -119,18 +116,44 @@ async def deep_research(
     market  = result.get("market_overview", "")
     rec     = result.get("investment_recommendation", "")
 
-    return DeepResearchResponse(
-        market_context=market or summary,
-        opportunities=[],
-        best_pick=rec,
-        market_trend=market,
-        action_plan=rec,
-        disclaimer=(
+    mapped_result = {
+        "market_context":           market or summary,
+        "best_pick":                rec,
+        "market_trend":             market,
+        "action_plan":              rec,
+        "opportunities":            [],
+        "disclaimer": (
             "I risultati generati dall'AI hanno finalità esclusivamente informativa "
             "e non costituiscono consulenza finanziaria o immobiliare."
         ),
-        remaining_usage=remaining,
-    )
+        "summary":                   summary,
+        "market_overview":           market,
+        "investment_recommendation": rec,
+        "risks_opportunities":       result.get("risks_opportunities", ""),
+        "properties_analysis":       result.get("properties_analysis", []),
+        "llm_used":                  result.get("llm_used", "gemini"),
+    }
+
+    # FIX: Simula il comportamento asincrono per non far crashare il frontend
+    fake_job_id = f"sync-fallback-{uuid.uuid4()}"
+    _fallback_store[fake_job_id] = {
+        "job_id": fake_job_id,
+        "user_id": current_user.get("id"),
+        "status": "completed",
+        "progress": 100,
+        "current_step": "Analisi completata",
+        "step_num": 3,
+        "total_steps": 3,
+        "result": json.dumps(mapped_result),
+        "error": None
+    }
+
+    return {
+        "job_id":          fake_job_id,
+        "status":          "queued",
+        "poll_url":        f"/jobs/{fake_job_id}",
+        "remaining_usage": remaining,
+    }
 
 
 # ── /calculate ────────────────────────────────────────────────────────────────
@@ -246,20 +269,49 @@ async def calculate_roi(
 
     increment_usage(current_user["email"], "calcola")
 
-    winner_label = _extract_winner(result.get("recommended_scenario", ""), normalized)
+    recommendation = result.get("recommended_scenario", "")
+    market         = result.get("market_analysis", "")
+    summary        = result.get("summary", "")
+    winner_label   = _extract_winner(recommendation, normalized)
 
-    return CompareROIResponse(
-        results=result.get("results", []),
-        winner_label=winner_label,
-        winner_reason=result.get("summary", ""),
-        comparison_summary=result.get("recommended_scenario", ""),
-        market_notes=result.get("market_analysis", ""),
-        disclaimer=(
-            "I risultati generati dall'AI hanno finalità esclusivamente informativa "
-            "e non costituiscono consulenza finanziaria o immobiliare."
+    mapped_result = {
+        "winner_label":       winner_label,
+        "winner_reason":      summary,
+        "comparison_summary": recommendation,
+        "market_notes":       market,
+        "results":            result.get("scenarios", []),
+        "disclaimer": (
+            "I risultati generati dall'AI hanno finalità esclusivamente "
+            "informativa e non costituiscono consulenza finanziaria o immobiliare."
         ),
-        remaining_usage=remaining,
-    )
+        "remaining_usage":      None,
+        "summary":              summary,
+        "market_analysis":      market,
+        "financial_analysis":   result.get("financial_analysis", ""),
+        "recommended_scenario": recommendation,
+        "llm_used":             result.get("llm_used", "gemini"),
+    }
+
+    # FIX: Simula il comportamento asincrono per non far crashare il frontend
+    fake_job_id = f"sync-fallback-{uuid.uuid4()}"
+    _fallback_store[fake_job_id] = {
+        "job_id": fake_job_id,
+        "user_id": current_user.get("id"),
+        "status": "completed",
+        "progress": 100,
+        "current_step": "Calcolo completato",
+        "step_num": 3,
+        "total_steps": 3,
+        "result": json.dumps(mapped_result),
+        "error": None
+    }
+
+    return {
+        "job_id":          fake_job_id,
+        "status":          "queued",
+        "poll_url":        f"/jobs/{fake_job_id}",
+        "remaining_usage": remaining,
+    }
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────

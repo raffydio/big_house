@@ -78,19 +78,32 @@ export interface LoginPayload {
 }
 
 export interface PropertyInput {
+  label?: string; // Aggiunto per CalcROI
   address: string;
-  price: number;
+  purchase_price: number;
   size_sqm: number;
   rooms: number;
   floor?: number;
   year_built?: number;
   condition?: string;
+  has_elevator?: boolean; // Aggiunto per CalcROI
   notes?: string;
+  renovation_budget?: number; // Aggiunto per CalcROI
+  mortgage_rate?: number; // Aggiunto per CalcROI
+  mortgage_years?: number; // Aggiunto per CalcROI
+  down_payment_pct?: number; // Aggiunto per CalcROI
 }
 
 export interface DeepResearchRequest {
   query: string;
+  properties?: PropertyInput[]; // Reso opzionale
+  language?: string; // Aggiunto per SPRINT 4
+}
+
+export interface CompareROIRequest {
   properties: PropertyInput[];
+  goal: string;
+  language?: string; // Aggiunto per SPRINT 4
 }
 
 export interface PropertyCalculationInput {

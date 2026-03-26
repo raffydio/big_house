@@ -1,19 +1,13 @@
 """
 agents/llm_factory.py
-SPRINT 2 — Aggiunto fallback Claude (Haiku 4.5 / Sonnet 4.6)
+SPRINT 2/5 — Gestione LLM, Rotazione Chiavi e Fallback Claude
 
 Logica completa:
-  1. get_llm(plan)          → LLM Gemini primario (invariato)
-  2. get_fallback_llm(plan) → LLM Claude fallback
-  3. should_fallback(exc)   → True se 429 / 503 / timeout / SearchError
-  4. get_search_mode(llm_type) → "gemini" | "claude"
-
-.env aggiuntivo richiesto:
-    ANTHROPIC_API_KEY=sk-ant-...
-
-Modelli Claude attivi a marzo 2026:
-    FREE/BASIC/PRO → claude-haiku-4-5-20251001  ($1/$5 per MTok)
-    PLUS           → claude-sonnet-4-6           ($3/$15 per MTok)
+  1. get_llm(plan)          → LLM Gemini primario per CrewAI
+  2. get_current_gemini_key() → Chiave raw ruotata per Pipeline Deterministica
+  3. get_fallback_llm(plan) → LLM Claude fallback
+  4. should_fallback(exc)   → True se 429 / 503 / timeout / SearchError
+  5. get_search_mode(llm_type) → "gemini" | "claude"
 """
 
 import os
@@ -33,8 +27,6 @@ PLAN_MODELS: dict[str, str] = {
 }
 
 # ── Mappa piano → modello Claude fallback ─────────────────────────────────────
-# Haiku 4.5: veloce, economico ($1/$5 per MTok) — per FREE/BASIC/PRO
-# Sonnet 4.6: qualità superiore ($3/$15 per MTok) — per PLUS
 PLAN_FALLBACK_MODELS: dict[str, str] = {
     "free":  "anthropic/claude-haiku-4-5-20251001",
     "basic": "anthropic/claude-haiku-4-5-20251001",
@@ -57,7 +49,6 @@ PLAN_MAX_TOKENS: dict[str, int] = {
 }
 
 # ── Eccezioni che triggherano il fallback a Claude ────────────────────────────
-# Importiamo SearchExhaustedError lazy per evitare circular import
 FALLBACK_EXCEPTION_TYPES = (
     "ResourceExhausted",        # Google 429
     "ServiceUnavailable",       # Google 503
@@ -97,12 +88,11 @@ def _next_gemini_key(keys: list[str]) -> str:
     return key
 
 
-# ── LLM primario — Gemini ─────────────────────────────────────────────────────
-
-def get_llm(plan: str = "free") -> LLM:
+# ── NUOVO: Esporta la chiave corrente per i servizi NON-CrewAI ───────────────
+def get_current_gemini_key() -> str:
     """
-    Restituisce LLM Gemini calibrato per il piano, con key rotation.
-    Override modello: GEMINI_MODEL_OVERRIDE nel .env
+    Restituisce la chiave Gemini corrente applicando la rotazione.
+    Usata dalla Pipeline Deterministica e dal Search Tool per bilanciare il carico.
     """
     keys = _get_gemini_keys()
     if not keys:
@@ -110,11 +100,18 @@ def get_llm(plan: str = "free") -> LLM:
             "Nessuna GEMINI_API_KEY trovata. "
             "Aggiungi GEMINI_API_KEY=AIzaSy... a backend/.env"
         )
+    return _next_gemini_key(keys)
 
-    api_key = _next_gemini_key(keys)
+
+# ── LLM primario — Gemini (Per CrewAI) ────────────────────────────────────────
+
+def get_llm(plan: str = "free") -> LLM:
+    """
+    Restituisce LLM Gemini calibrato per il piano, con key rotation.
+    Override modello: GEMINI_MODEL_OVERRIDE nel .env
+    """
+    api_key = get_current_gemini_key()
     key_label = f"...{api_key[-6:]}"
-
-    
 
     normalized = (plan or "free").lower()
     if normalized not in PLAN_MODELS:
@@ -142,14 +139,9 @@ def get_llm(plan: str = "free") -> LLM:
 def get_fallback_llm(plan: str = "free") -> LLM | None:
     """
     Restituisce LLM Claude fallback per il piano.
-    Restituisce None se ANTHROPIC_API_KEY non è configurata
-    (fallback silenzioso — il crew continua senza Claude).
-
-    Modelli marzo 2026:
-        FREE/BASIC/PRO → claude-haiku-4-5-20251001  ($1/$5 MTok)
-        PLUS           → claude-sonnet-4-6           ($3/$15 MTok)
+    Restituisce None se ANTHROPIC_API_KEY non è configurata.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()  # al momento non c'è
     if not api_key:
         logger.warning(
             "[llm_factory] ANTHROPIC_API_KEY non configurata — "
@@ -180,35 +172,24 @@ def get_fallback_llm(plan: str = "free") -> LLM | None:
 
 def should_fallback(exc: Exception) -> bool:
     """
-    Restituisce True se l'eccezione indica che Gemini non è disponibile
-    e bisogna passare a Claude.
-
-    Trigger:
-        - HTTP 429 (Rate Limit)
-        - HTTP 503 (Service Unavailable)
-        - HTTP 500/502/504 (Server Error / Gateway)
-        - Timeout / Connection Error
-        - SearchExhaustedError (tutti i provider search falliti)
+    Restituisce True se l'eccezione indica che Gemini non è disponibile.
     """
     exc_type = type(exc).__name__
 
-    # Check per tipo eccezione
     if exc_type in FALLBACK_EXCEPTION_TYPES:
         logger.info(f"[llm_factory] should_fallback=True — tipo: {exc_type}")
         return True
 
-    # Check per status code HTTP (LiteLLM wrappa con status_code)
     status_code = getattr(exc, "status_code", None)
     if status_code in FALLBACK_STATUS_CODES:
         logger.info(f"[llm_factory] should_fallback=True — HTTP {status_code}")
         return True
 
-    # Check nel messaggio dell'eccezione
     exc_msg = str(exc).lower()
     fallback_keywords = [
         "429", "rate limit", "quota", "resource exhausted",
         "503", "service unavailable", "timeout", "timed out",
-        "connection", "search exhausted",
+        "connection", "search exhausted", "overloaded"
     ]
     for kw in fallback_keywords:
         if kw in exc_msg:
@@ -221,18 +202,12 @@ def should_fallback(exc: Exception) -> bool:
 # ── Modalità search in base all'LLM attivo ───────────────────────────────────
 
 def get_search_mode(llm_type: str = "gemini") -> str:
-    """
-    Restituisce la modalità search corretta per il tipo di LLM.
-    "gemini" → cascata Google Search → DDG → Brave
-    "claude" → cascata DDG → Brave (Google Search non disponibile)
-    """
     return "claude" if llm_type == "claude" else "gemini"
 
 
 # ── Label leggibile del modello ───────────────────────────────────────────────
 
 def get_model_label(plan: str, llm_type: str = "gemini") -> str:
-    """Nome leggibile del modello per il frontend."""
     if llm_type == "claude":
         labels = {
             "free":  "Claude Haiku 4.5",

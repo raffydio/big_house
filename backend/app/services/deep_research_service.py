@@ -172,7 +172,7 @@ def run_deep_research(
     #   2. Se 429 → aspetta 30s e riprova (la quota si rigenera parzialmente)
     #   3. Se 429 ancora → aspetta 90s e riprova (rigenera completamente)
     #   4. Se ancora fallisce → fallback Claude
-    RETRY_WAITS_SECONDS = [0, 30, 90]  # attese PRIMA di ogni tentativo
+    RETRY_WAITS_SECONDS = [0, 60, 120]  # attese PRIMA di ogni tentativo — Google richiede ~43s
     last_gemini_exc: Exception | None = None
 
     for attempt, wait in enumerate(RETRY_WAITS_SECONDS):
@@ -264,28 +264,6 @@ def _build_language_instruction(language: str) -> str:
     )
 
 
-
-    """
-    Restituisce l'istruzione lingua da iniettare in testa a ogni task.
-    Supporta tutti i codici ISO 639-1 — il modello gestisce la traduzione.
-    """
-    lang_names = {
-        "it": "Italian",  "en": "English",   "fr": "French",
-        "de": "German",   "es": "Spanish",   "pt": "Portuguese",
-        "nl": "Dutch",    "pl": "Polish",    "ru": "Russian",
-        "zh": "Chinese",  "ja": "Japanese",  "ar": "Arabic",
-    }
-    lang_name = lang_names.get(language, "English")
-    return (
-        f"CRITICAL LANGUAGE RULE: You MUST respond EXCLUSIVELY in {lang_name} "
-        f"(language code: {language}). "
-        f"Every single word of your response must be in {lang_name}. "
-        f"Do NOT use any other language regardless of what language "
-        f"your instructions are written in. "
-        f"The user's query is in {lang_name} — match that language exactly.\n\n"
-    )
-
-
 def _run_crew(
     query: str,
     properties: list[dict],
@@ -301,7 +279,7 @@ def _run_crew(
     llm_type: "gemini" | "claude"
     forced_llm: se fornito, usa questo LLM invece di chiamare get_llm()
     language: codice ISO della lingua in cui rispondere
-    task_callback: callable(task_output) opzionale — chiamato dopo ogni Task
+    task_callback: callable(task_output) opzionale - chiamato dopo ogni Task
     """
     llm         = forced_llm or get_llm(plan=plan)
     search_mode = get_search_mode(llm_type)

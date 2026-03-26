@@ -1,6 +1,6 @@
 """
 backend/app/routers/jobs.py
-SPRINT 4 — Polling e SSE per lo stato dei job asincroni.
+SPRINT 4/5 — Polling e SSE per lo stato dei job asincroni.
 
 Endpoints:
     GET  /jobs/{job_id}        → stato corrente (polling ogni 2-3s dal frontend)
@@ -19,7 +19,7 @@ Struttura risposta GET /jobs/{job_id}:
         "progress":     0-100,
         "current_step": "Analisi mercato locale",
         "step_num":     1,
-        "total_steps":  4,
+        "total_steps":  3,
         "result":       {...} | null,   # solo se completed
         "error":        "..." | null,   # solo se failed
         "created_at":   "ISO datetime",
@@ -41,6 +41,7 @@ from app.core.job_store import get_job, get_result
 
 logger = logging.getLogger(__name__)
 
+# Esportazione del router (Risolve l'ImportError in main.py)
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
@@ -87,7 +88,7 @@ async def get_job_status(
         "progress":     job.get("progress", 0),
         "current_step": job.get("current_step", ""),
         "step_num":     job.get("step_num", 0),
-        "total_steps":  job.get("total_steps", 4),
+        "total_steps":  job.get("total_steps", 3), # Aggiornato a 3 per la nuova pipeline
         "result":       result,
         "error":        job.get("error"),
         "created_at":   job.get("created_at"),
@@ -145,7 +146,7 @@ async def stream_job_status(
                 "progress":     current_job.get("progress", 0),
                 "current_step": current_job.get("current_step", ""),
                 "step_num":     current_job.get("step_num", 0),
-                "total_steps":  current_job.get("total_steps", 4),
+                "total_steps":  current_job.get("total_steps", 3), # Aggiornato a 3
                 "result":       result,
                 "error":        current_job.get("error"),
             }

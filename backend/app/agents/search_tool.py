@@ -14,6 +14,7 @@ import logging
 from typing import Optional
 
 from crewai.tools import tool
+from app.agents.llm_factory import get_current_gemini_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,10 @@ def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
     from google import genai
     from google.genai import types
 
-    client = genai.Client()
+    # FIX: Usa la chiave ruotata dal factory invece di leggere dal .env
+    api_key = get_current_gemini_key()
+    client = genai.Client(api_key=api_key)
+    
     grounding_tool = types.Tool(google_search=types.GoogleSearch())
     config = types.GenerateContentConfig(tools=[grounding_tool])
 
@@ -58,7 +62,12 @@ def _search_google(query: str, model: str = "gemini-2.5-flash") -> str:
 # Provider 2 — DuckDuckGo
 # ─────────────────────────────────────────────
 def _search_duckduckgo(query: str, max_results: int = 3) -> str: # Ridotto da 5 a 3
-    from duckduckgo_search import DDGS
+    # FIX: Aggiornato per la nuova versione della libreria (ddgs)
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        # Fallback se la libreria non è ancora stata aggiornata nel venv
+        from duckduckgo_search import DDGS
 
     with DDGS() as ddgs:
         results = list(ddgs.text(query, max_results=max_results))
@@ -110,8 +119,14 @@ def _search_brave(query: str, count: int = 3) -> str: # Ridotto da 5 a 3
 # Funzione principale — Cascata search
 # ─────────────────────────────────────────────
 def get_search_results(query: str, mode: str = "gemini", gemini_model: Optional[str] = None) -> str:
-    model = gemini_model or os.getenv("GEMINI_MODEL_OVERRIDE", "gemini/gemini-2.5-flash")
-    model_name = model.replace("gemini/", "")
+    # Se c'è un override nel .env, lo usiamo, altrimenti default a flash
+    model_override = os.environ.get("GEMINI_MODEL_OVERRIDE", "").strip()
+    if model_override:
+        model_name = model_override.replace("gemini/", "")
+    else:
+        model = gemini_model or "gemini-2.5-flash"
+        model_name = model.replace("gemini/", "")
+        
     providers_tried = []
 
     if mode == "gemini":

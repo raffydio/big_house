@@ -1,4 +1,4 @@
-// src/pages/dashboard/DeepResearch.tsx v4 (Async Celery + Redis)
+// src/pages/dashboard/DeepResearch.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import type { Lang, ChatMessage, ChatSession } from '../../types';
 import { useApi } from '../../hooks/useApi';
@@ -21,7 +21,6 @@ interface FoundOpportunity {
   why_interesting: string;
 }
 
-// NUOVA STRUTTURA RISULTATO (Sprint 4)
 interface DRResponse {
   summary: string;
   market_overview: string;
@@ -31,7 +30,6 @@ interface DRResponse {
   llm_used: string;
 }
 
-// RISPOSTA INIZIALE DEL JOB
 interface JobInitResponse {
   job_id: string;
   status: string;
@@ -49,12 +47,12 @@ interface DeepResearchProps {
 }
 
 const EXAMPLES: Record<string, string[]> = {
-  it: [
+  it:[
     'Cerco appartamento da ristrutturare a Napoli centro storico, budget 200.000€, almeno 70mq, buon potenziale Airbnb',
     'Investimento buy-to-let a Milano zona Loreto o Lambrate, budget 350.000€, rendimento affitto minimo 4%',
     'Trilocale a Roma Pigneto da ristrutturare, budget 180.000€, per flipping entro 18 mesi',
   ],
-  en: [
+  en:[
     'Looking for apartment to renovate in Naples historic center, budget €200,000, at least 70sqm, good Airbnb potential',
     'Buy-to-let in Milan Loreto area, budget €350,000, minimum 4% gross yield',
     '3-bed in Rome to renovate, max budget €180,000, for flipping within 18 months',
@@ -63,19 +61,24 @@ const EXAMPLES: Record<string, string[]> = {
 
 const getExamples = (lang: string) => EXAMPLES[lang] || EXAMPLES.it;
 
-function buildText(r: DRResponse): string {
-  return [
-    '── VERDETTO ──', r.summary, '',
-    '── PANORAMICA MERCATO ──', r.market_overview, '',
+// Funzione blindata anti-crash
+function buildText(r: DRResponse | null | undefined): string {
+  if (!r) return 'Nessun risultato disponibile.';
+  
+  const props = r.properties_analysis || [];
+  
+  return[
+    '── VERDETTO ──', r.summary || '', '',
+    '── PANORAMICA MERCATO ──', r.market_overview || '', '',
     '── OPPORTUNITÀ TROVATE ──',
-    ...(r.properties_analysis || []).map((o, i) =>
-      `[${i + 1}] ${o.title}\nScore: ${o.opportunity_score}/10 | ${o.estimated_price_range} | ${o.size_range}\n` +
-      `${o.zone} | €${o.price_per_sqm?.toLocaleString('it-IT')}/mq | ${o.condition}\n` +
-      `ROI: ${o.roi_potential} | Rinnovo: ${o.renovation_estimate}\n` +
-      `✅ ${o.key_pros?.join(' · ')}\n⚠️ ${o.key_cons?.join(' · ')}\n${o.why_interesting}`
-    ),
-    '', '── RISCHI E OPPORTUNITÀ ──', r.risks_opportunities,
-    '', '── RACCOMANDAZIONE FINALE ──', r.investment_recommendation,
+    ...(props.length > 0 ? props.map((o, i) =>
+      `[${i + 1}] ${o.title || 'Opportunità'}\nScore: ${o.opportunity_score || 0}/10 | ${o.estimated_price_range || ''} | ${o.size_range || ''}\n` +
+      `${o.zone || ''} | €${o.price_per_sqm?.toLocaleString('it-IT') || 0}/mq | ${o.condition || ''}\n` +
+      `ROI: ${o.roi_potential || ''} | Rinnovo: ${o.renovation_estimate || ''}\n` +
+      `✅ ${(o.key_pros ||[]).join(' · ')}\n⚠️ ${(o.key_cons ||[]).join(' · ')}\n${o.why_interesting || ''}`
+    ) : ['Nessuna opportunità specifica trovata.']),
+    '', '── RISCHI E OPPORTUNITÀ ──', r.risks_opportunities || '',
+    '', '── RACCOMANDAZIONE FINALE ──', r.investment_recommendation || '',
   ].join('\n');
 }
 
@@ -84,7 +87,7 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [lastResult, setLastResult] = useState<DRResponse | null>(null);
+  const[lastResult, setLastResult] = useState<DRResponse | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   
   // Stati per il Polling
@@ -92,11 +95,13 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
   const [pollData, setPollData] = useState({ progress: 0, step: 'In coda...' });
   
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const { loading, error, call } = useApi<JobInitResponse, { query: string }>('/features/deep-research');
+  
+  // Aggiunto il parametro language al payload dell'API
+  const { loading, error, call } = useApi<JobInitResponse, { query: string; language: string }>('/features/deep-research');
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isPolling]);
+  },[messages, isPolling]);
 
   const addMsg = (msg: Omit<ChatMessage, 'id' | 'timestamp'>): ChatMessage => {
     const full = { ...msg, id: crypto.randomUUID(), timestamp: new Date().toISOString() } as ChatMessage;
@@ -127,12 +132,14 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
         if (data.status === 'completed') {
           clearInterval(interval);
           setIsPolling(false);
-          setLastResult(data.result);
+          
+          const resultData = data.result || {};
+          setLastResult(resultData);
           onUsageIncrement();
           
-          const text = buildText(data.result);
+          const text = buildText(resultData);
           const isPaid = user?.plan && user.plan !== 'free';
-          const docxName = isPaid ? `dr_${Date.now()}.docx` : undefined;
+          const docxName = isPaid ? `analisi_mercato_${Date.now()}.docx` : undefined;
           
           const aiMsg = addMsg({
             role: 'assistant',
@@ -152,12 +159,12 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
         } else if (data.status === 'failed') {
           clearInterval(interval);
           setIsPolling(false);
-          setLocalError(data.error || "Errore durante l'analisi degli agenti.");
+          setLocalError(data.error || "Errore durante l'analisi. Riprova.");
         }
       } catch (err) {
         console.error("Polling error", err);
       }
-    }, 5000); // <--- FIX: Modificato da 2500 a 5000 ms
+    }, 5000);
   };
 
   const handleSubmit = async () => {
@@ -173,8 +180,8 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
     setQuery('');
     const userMsg = addMsg({ role: 'user', content: q, feature: 'deepresearch' });
 
-    // 1. Chiamata iniziale per ottenere il job_id
-    const initResult = await call({ query: q });
+    // 1. Chiamata iniziale per ottenere il job_id (passando anche la lingua)
+    const initResult = await call({ query: q, language: lang });
 
     if (!initResult) {
       const isLimitError = error === 'errorLimit' || (typeof error === 'string' && (error.includes('429') || error.toLowerCase().includes('limit')));
@@ -196,12 +203,12 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
 
   const handleDownloadDocx = async () => {
     if (!lastResult) return;
-    await generateDocx('Deep Research — Opportunità', [
-      { heading: 'Verdetto', content: lastResult.summary },
-      { heading: 'Panoramica Mercato', content: lastResult.market_overview },
-      { heading: 'Opportunità', content: (lastResult.properties_analysis || []).map((o) => `${o.title}\n${o.why_interesting}`).join('\n\n') },
-      { heading: 'Rischi e Opportunità', content: lastResult.risks_opportunities },
-      { heading: 'Raccomandazione Finale', content: lastResult.investment_recommendation },
+    await generateDocx('Analisi di Mercato',[
+      { heading: 'Verdetto', content: lastResult.summary || 'N/A' },
+      { heading: 'Panoramica Mercato', content: lastResult.market_overview || 'N/A' },
+      { heading: 'Opportunità', content: (lastResult.properties_analysis || []).map((o) => `${o.title}\n${o.why_interesting}`).join('\n\n') || 'Nessuna opportunità specifica.' },
+      { heading: 'Rischi e Opportunità', content: lastResult.risks_opportunities || 'N/A' },
+      { heading: 'Raccomandazione Finale', content: lastResult.investment_recommendation || 'N/A' },
     ]);
   };
 
@@ -212,10 +219,10 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.4rem, 3vw, 2rem)', color: 'var(--text-navy)', marginBottom: 6 }}>
-          Deep Research Immobiliare
+          Analisi di Mercato Immobiliare
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-          Descrivi cosa stai cercando — gli agenti AI trovano le opportunità sul mercato per te
+          Descrivi cosa stai cercando — l'AI analizzerà il mercato e troverà le migliori opportunità per te
         </p>
       </div>
 
@@ -320,7 +327,7 @@ export const DeepResearchPage: React.FC<DeepResearchProps> = ({
             <Button variant="primary" size="lg" onClick={onLimitReached}>⚡ Upgrade per continuare →</Button>
           ) : (
             <Button variant="primary" size="lg" onClick={handleSubmit} loading={loading || isPolling} disabled={query.trim().length < 15 || loading || isPolling}>
-              {loading || isPolling ? 'Agenti in ricerca...' : 'Avvia Ricerca AI →'}
+              {loading || isPolling ? 'Analisi in corso...' : 'Avvia Analisi di Mercato →'}
             </Button>
           )}
           {messages.length > 0 && !isPolling && (
@@ -347,12 +354,9 @@ const OpportunityCard: React.FC<{ opp: FoundOpportunity; index: number; isBest: 
       </div>
       <p style={{ fontSize: '0.87rem', fontWeight: 700, color: isBest ? '#fff' : 'var(--text-navy)', marginBottom: 10, lineHeight: 1.3 }}>{opp.title}</p>
       {[
-        ['💶', opp.estimated_price_range],
-        ['📐', opp.size_range],
-        ['🏗️', opp.condition],
-        ['📊', `€${opp.price_per_sqm?.toLocaleString('it-IT')}/mq`],
-        ['📈', opp.roi_potential],
-        ['🔨', opp.renovation_estimate],
+        ['💶', opp.estimated_price_range],['📐', opp.size_range],
+        ['🏗️', opp.condition],['📊', `€${opp.price_per_sqm?.toLocaleString('it-IT')}/mq`],
+        ['📈', opp.roi_potential],['🔨', opp.renovation_estimate],
       ].map(([icon, val]) => (
         <div key={String(icon)} style={{ display: 'flex', gap: 6, marginBottom: 3, fontSize: '0.77rem' }}>
           <span>{icon}</span><span style={{ color: isBest ? 'rgba(255,255,255,.72)' : 'var(--text-secondary)' }}>{val}</span>
